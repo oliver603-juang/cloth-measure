@@ -89,7 +89,8 @@ td{padding:4px 0;border-bottom:1px solid var(--line)}td:last-child{text-align:ri
     <div class="hint" style="margin-top:6px">檔名：<span id="fpreview" style="color:var(--fg)">—</span></div>
   </div>
   <div class="row" style="margin-top:10px">
-    <button class="sec" id="dl">下載標註圖 (JPG)</button>
+    <button class="sec" id="dlp">下載商品圖</button>
+    <button class="sec" id="dl">下載尺寸圖</button>
   </div>
 </div>
 
@@ -513,15 +514,27 @@ function paint(){
   x.fillStyle='rgba(0,0,0,.28)';
   x.fillText('ArUco 校正量測',OVW-FS*0.5,OVH-FS*0.45);
 }
+function saveCanvas(cv2,name){
+  const a=document.createElement('a');
+  a.download=name; a.href=cv2.toDataURL('image/jpeg',0.92); a.click();
+}
+function plainCanvas(){                       // garment on white, no annotations
+  const c=document.createElement('canvas');
+  c.width=OVW;c.height=OVH;
+  const x=c.getContext('2d');
+  x.fillStyle='#fff';x.fillRect(0,0,OVW,OVH);
+  x.drawImage(BASE,PAD,PAD);
+  return c;
+}
 function autoName(){
   const g=id=>$(id).textContent.replace('.','');       // 63.8 -> 638
   const n=($('fname').value||'').trim().replace(/[\\/:*?"<>|\s]+/g,'_');
   return `${n?n+'_':''}肩${g('vS')}_胸${g('vC')}_腰${g('vW')}_長${g('vL')}`;
 }
-function refreshName(){ $('fpreview').textContent=autoName()+'.jpg' }
+function refreshName(){ $('fpreview').textContent=autoName()+'_商品.jpg  /  '+autoName()+'_尺寸.jpg' }
 $('fname').oninput=refreshName;
-$('dl').onclick=()=>{const a=document.createElement('a');
-  a.download=autoName()+'.jpg';a.href=$('ov').toDataURL('image/jpeg',0.92);a.click()};
+$('dlp').onclick=()=>saveCanvas(plainCanvas(),autoName()+'_商品.jpg');
+$('dl').onclick =()=>saveCanvas($('ov'),        autoName()+'_尺寸.jpg');
 
 </script>
 </body></html>
