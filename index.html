@@ -1,0 +1,482 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>衣物尺寸量測 — 演算法驗證</title>
+<style>
+:root{--bg:#0f1115;--panel:#181b22;--line:#2a2f3a;--fg:#e6e8ec;--dim:#9aa3b2;--acc:#4ea1ff;--ok:#3ddc97;--warn:#ffb454;--err:#ff6b6b}
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+body{margin:0;background:var(--bg);color:var(--fg);font:15px/1.5 -apple-system,"Noto Sans TC",system-ui,sans-serif}
+header{padding:14px 16px;border-bottom:1px solid var(--line);position:sticky;top:0;background:var(--bg);z-index:9}
+h1{margin:0;font-size:16px;font-weight:600}
+.sub{color:var(--dim);font-size:12px;margin-top:2px}
+.wrap{padding:14px;max-width:900px;margin:0 auto}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:14px;margin-bottom:12px}
+button{background:var(--acc);color:#04101f;border:0;border-radius:10px;padding:12px 16px;font-size:15px;font-weight:600;width:100%}
+button:disabled{background:#39414f;color:#6b7280}
+button.sec{background:#242a35;color:var(--fg);border:1px solid var(--line)}
+label.file{display:block;background:#242a35;border:1px dashed #3a4250;border-radius:10px;padding:22px;text-align:center;color:var(--dim)}
+label.file input{display:none}
+canvas{width:100%;display:block;border-radius:8px;background:#000;touch-action:none}
+.steps{display:grid;gap:8px;font-size:13px}
+.step{display:flex;gap:8px;align-items:flex-start}
+.dot{width:16px;height:16px;border-radius:50%;background:#39414f;flex:0 0 16px;margin-top:3px;display:grid;place-items:center;font-size:10px;color:#04101f}
+.dot.ok{background:var(--ok)}.dot.err{background:var(--err)}.dot.run{background:var(--warn)}
+.res{display:grid;grid-template-columns:repeat(2,1fr);gap:8px}
+.m{background:#20252f;border:1px solid var(--line);border-radius:10px;padding:10px}
+.m .k{font-size:11px;color:var(--dim);letter-spacing:.5px}
+.m .v{font-size:22px;font-weight:700;font-variant-numeric:tabular-nums}
+.m .v small{font-size:12px;color:var(--dim);font-weight:400}
+.m.auto{border-color:#2f5b8a}.m.man{border-color:#7a5a20}
+.badge{display:inline-block;font-size:11px;padding:2px 6px;border-radius:5px;background:#2b3240;color:var(--dim)}
+.badge.ok{background:#12402f;color:var(--ok)}.badge.warn{background:#43331a;color:var(--warn)}.badge.err{background:#421d1d;color:var(--err)}
+table{width:100%;border-collapse:collapse;font-size:13px}
+td{padding:4px 0;border-bottom:1px solid var(--line)}td:last-child{text-align:right;font-variant-numeric:tabular-nums;color:var(--dim)}
+.hint{color:var(--dim);font-size:12px;margin-top:8px}
+.thumbs{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:10px}
+.thumbs figure{margin:0}.thumbs figcaption{font-size:11px;color:var(--dim);margin-top:4px}
+.row{display:flex;gap:8px}.row>*{flex:1}
+</style>
+</head>
+<body>
+<header><h1>衣物尺寸量測 — 演算法驗證頁</h1>
+<div class="sub">ArUco 校正 → Otsu 分割 → 對稱軸轉正 → 特徵點量測</div></header>
+<div class="wrap">
+<div class="card">
+  <label class="file"><input type="file" id="fi" accept="image/*">
+    <b>選擇 / 拍攝照片</b><div class="hint" style="margin-top:6px">四張 ArUco 需完整入鏡，衣服平鋪於中央</div>
+  </label>
+  <div class="row" style="margin-top:10px">
+    <button id="run" disabled>開始分析</button>
+  </div>
+</div>
+
+<div class="card" id="cfg">
+  <b style="font-size:13px">板面常數</b>
+  <table style="margin-top:8px">
+    <tr><td>標記黑塊邊長 m</td><td><input id="cm" value="49.0" style="width:70px;background:#20252f;color:#e6e8ec;border:1px solid #2a2f3a;border-radius:6px;padding:4px;text-align:right"> mm</td></tr>
+    <tr><td>ID0→ID1 左上距 W</td><td><input id="cw" value="1001.0" style="width:70px;background:#20252f;color:#e6e8ec;border:1px solid #2a2f3a;border-radius:6px;padding:4px;text-align:right"> mm</td></tr>
+    <tr><td>ID0→ID2 左上距 H</td><td><input id="ch" value="1144.0" style="width:70px;background:#20252f;color:#e6e8ec;border:1px solid #2a2f3a;border-radius:6px;padding:4px;text-align:right"> mm</td></tr>
+  </table>
+</div>
+
+<div class="card"><div class="steps" id="steps"></div></div>
+
+<div class="card" id="qcard" style="display:none">
+  <b style="font-size:13px">品質指標</b>
+  <table style="margin-top:8px">
+    <tr><td>偵測到的標記</td><td id="q1">—</td></tr>
+    <tr><td>Reprojection error</td><td id="q2">—</td></tr>
+    <tr><td>轉正角度</td><td id="q3">—</td></tr>
+    <tr><td>對稱 IoU</td><td id="q4">—</td></tr>
+  </table>
+</div>
+
+<div class="card" id="rcard" style="display:none">
+  <div class="res">
+    <div class="m auto"><div class="k">LENGTH 衣長</div><div class="v"><span id="vL">—</span> <small>cm</small></div></div>
+    <div class="m auto"><div class="k">CHEST 胸寬(腋下)</div><div class="v"><span id="vC">—</span> <small>cm</small></div></div>
+    <div class="m man"><div class="k">SHOULDER 肩寬</div><div class="v"><span id="vS">—</span> <small>cm</small></div></div>
+    <div class="m auto"><div class="k">WAIST 下擺</div><div class="v"><span id="vW">—</span> <small>cm</small></div></div>
+  </div>
+  <div class="hint">藍框 = 自動可靠　橙框 = 建議人工確認。拖曳圖上的圓點可修正端點。</div>
+  <div style="margin-top:10px"><canvas id="ov"></canvas></div>
+  <div class="row" style="margin-top:10px">
+    <button class="sec" id="dl">下載標註圖</button>
+  </div>
+</div>
+
+<div class="card" id="dbg" style="display:none">
+  <b style="font-size:13px">中間結果</b>
+  <div class="thumbs">
+    <figure><canvas id="c1"></canvas><figcaption>1. 透視校正後</figcaption></figure>
+    <figure><canvas id="c2"></canvas><figcaption>2. Otsu 分割 mask</figcaption></figure>
+    <figure><canvas id="c3"></canvas><figcaption>3. 對稱軸轉正</figcaption></figure>
+    <figure><canvas id="c4"></canvas><figcaption>4. 寬度剖面</figcaption></figure>
+  </div>
+</div>
+</div>
+<script>
+const DICT=[46386, 3994, 13101, 39238, 21662, 31181, 40494, 50418, 65242, 53078, 63889, 4519, 3767, 10767, 9393, 9790, 18021, 26112, 27742, 30383, 34443, 45099, 52437, 56706, 65095, 38001, 44260, 42324, 8483, 13423, 17429, 22450, 40655, 61643, 2222, 2345, 6261, 1279, 3574, 7258, 5912, 10792, 12940, 14514, 9448, 12011, 11583, 19300, 20526, 20499];
+const P=2.0;                 // px per mm in rectified space
+let cvReady=false, imgEl=null, ST={};
+const $=id=>document.getElementById(id);
+
+/* ---------- step UI ---------- */
+const STEPS=[['load','載入 OpenCV.js'],['aruco','偵測 ArUco 標記'],['homo','解算 Homography'],
+ ['seg','Otsu 分割衣物'],['up','對稱軸轉正'],['meas','特徵點量測']];
+function initSteps(){$('steps').innerHTML=STEPS.map(s=>
+ `<div class="step" id="s_${s[0]}"><div class="dot"></div><div><span>${s[1]}</span><div class="hint" style="margin:0" id="d_${s[0]}"></div></div></div>`).join('');}
+function mark(k,cls,msg){const d=$('s_'+k).querySelector('.dot');d.className='dot '+cls;
+ d.textContent=cls==='ok'?'✓':cls==='err'?'!':'';if(msg)$('d_'+k).textContent=msg;}
+initSteps();
+
+/* ---------- opencv ---------- */
+mark('load','run','下載中…');
+const sc=document.createElement('script');
+const CDN='https://docs.opencv.org/4.10.0/opencv.js';
+sc.src=(new URLSearchParams(location.search)).get('cv')||'./opencv.js';
+sc.onload=()=>{const go=()=>{cvReady=true;mark('load','ok','就緒');chk();};
+ if(typeof cv==='undefined'){mark('load','err','cv 未定義');return}
+ if(typeof cv.then==='function'){cv.then(m=>{window.cv=m;go()});}
+ else if(cv.Mat){go();} else {cv.onRuntimeInitialized=go;}};
+sc.onerror=()=>{                                   // no local copy -> fall back to the CDN
+  if(sc.dataset.retry){mark('load','err','本機與 CDN 都載入失敗');return}
+  mark('load','run','本機無 opencv.js，改用 CDN…');
+  const s2=document.createElement('script');
+  s2.src=CDN; s2.dataset.retry='1'; s2.onload=sc.onload; s2.onerror=()=>mark('load','err','載入失敗，請檢查網路');
+  document.head.appendChild(s2);};
+document.head.appendChild(sc);
+
+$('fi').onchange=e=>{const f=e.target.files[0];if(!f)return;
+ const im=new Image();im.onload=()=>{imgEl=im;chk();
+   document.querySelector('label.file b').textContent=`已載入 ${im.width}×${im.height}`;};
+ createImageBitmap(f,{imageOrientation:'from-image'}).then(bm=>{
+   const c=document.createElement('canvas');c.width=bm.width;c.height=bm.height;
+   c.getContext('2d').drawImage(bm,0,0);im.src=c.toDataURL('image/jpeg',0.95);});};
+function chk(){$('run').disabled=!(cvReady&&imgEl);}
+$('run').onclick=()=>{setTimeout(run,30);};
+
+/* ---------- ArUco (custom, opencv.js primitives only) ---------- */
+function popcount(x){let c=0;while(x){x&=x-1;c++}return c}
+function rot90(b){const o=new Array(16);for(let r=0;r<4;r++)for(let c=0;c<4;c++)o[c*4+(3-r)]=b[r*4+c];return o}
+function bits2int(b){let v=0;for(const x of b)v=(v<<1)|x;return v>>>0}
+
+function detectMarkers(gray){
+  const th=new cv.Mat();
+  cv.adaptiveThreshold(gray,th,255,cv.ADAPTIVE_THRESH_MEAN_C,cv.THRESH_BINARY_INV,
+    (Math.round(Math.min(gray.cols,gray.rows)/40)*2+1),7);
+  const cts=new cv.MatVector(),hi=new cv.Mat();
+  cv.findContours(th,cts,hi,cv.RETR_LIST,cv.CHAIN_APPROX_SIMPLE);
+  const minA=(gray.cols*gray.rows)*0.00015, out=[];
+  for(let i=0;i<cts.size();i++){
+    const c=cts.get(i), per=cv.arcLength(c,true);
+    if(per<gray.cols*0.05){c.delete();continue}
+    const ap=new cv.Mat(); cv.approxPolyDP(c,ap,0.04*per,true);
+    if(ap.rows===4&&cv.isContourConvex(ap)&&Math.abs(cv.contourArea(ap))>minA){
+      let q=[];for(let k=0;k<4;k++)q.push([ap.data32S[k*2],ap.data32S[k*2+1]]);
+      // enforce clockwise order in image coords
+      let s=0;for(let k=0;k<4;k++){const a=q[k],b=q[(k+1)%4];s+=(b[0]-a[0])*(b[1]+a[1]);}
+      if(s<0)q.reverse();
+      const rA=identify(gray,q), rB=identify(gray,[q[0],q[3],q[2],q[1]]);
+      let r=null;
+      if(rA&&rB) r=(rB.ham<rA.ham)?rB:rA; else r=rA||rB;
+      if(r) out.push(r);
+    }
+    ap.delete();c.delete();
+  }
+  th.delete();cts.delete();hi.delete();
+  // dedupe by id (keep largest)
+  // keep, per id, the tightest quad that passed the black-border test (the marker itself,
+  // not the printed white margin around it)
+  const best={};
+  for(const m of out){const a=quadArea(m.pts);const cur=best[m.id];
+    if(!cur||m.ham<cur.m.ham||(m.ham===cur.m.ham&&a<cur.a))best[m.id]={m,a};}
+  return Object.values(best).map(x=>x.m);
+}
+function quadArea(q){let s=0;for(let k=0;k<4;k++){const a=q[k],b=q[(k+1)%4];s+=a[0]*b[1]-b[0]*a[1];}return Math.abs(s/2)}
+
+function identify(gray,q){
+  const N=48,CELL=8;
+  const src=cv.matFromArray(4,1,cv.CV_32FC2,[q[0][0],q[0][1],q[1][0],q[1][1],q[2][0],q[2][1],q[3][0],q[3][1]]);
+  const dst=cv.matFromArray(4,1,cv.CV_32FC2,[0,0,N,0,N,N,0,N]);
+  const M=cv.getPerspectiveTransform(src,dst), patch=new cv.Mat();
+  cv.warpPerspective(gray,patch,M,new cv.Size(N,N),cv.INTER_NEAREST,cv.BORDER_CONSTANT,new cv.Scalar(0));
+  const bin=new cv.Mat(); cv.threshold(patch,bin,0,255,cv.THRESH_BINARY+cv.THRESH_OTSU);
+  const cell=(r,c)=>{let s=0,n=0;
+    for(let y=r*CELL+2;y<(r+1)*CELL-2;y++)for(let x=c*CELL+2;x<(c+1)*CELL-2;x++){s+=bin.ucharPtr(y,x)[0]>127?1:0;n++}
+    return s/n>0.5?1:0};
+  let border=0;
+  for(let k=0;k<6;k++){border+=cell(0,k)+cell(5,k)+cell(k,0)+cell(k,5)}
+  let b=[];for(let r=1;r<=4;r++)for(let c=1;c<=4;c++)b.push(cell(r,c));
+  src.delete();dst.delete();M.delete();patch.delete();bin.delete();
+  if(border>3) return null;                     // border must be black
+  let best=null;
+  for(let k=0;k<4;k++){
+    const v=bits2int(b);
+    for(let id=0;id<DICT.length;id++){
+      const ham=popcount(v^DICT[id]);
+      if(ham<=1&&(!best||ham<best.ham)){
+        const pts=[];for(let j=0;j<4;j++)pts.push(q[(j+k)%4]);
+        best={id,pts,ham};
+      }
+    }
+    b=rot90(b);
+  }
+  return best;
+}
+function refine(gray,ms){
+  const pts=[];ms.forEach(m=>m.pts.forEach(p=>pts.push(p[0],p[1])));
+  const c=cv.matFromArray(pts.length/2,1,cv.CV_32FC2,pts);
+  cv.cornerSubPix(gray,c,new cv.Size(5,5),new cv.Size(-1,-1),
+    new cv.TermCriteria(cv.TERM_CRITERIA_EPS+cv.TERM_CRITERIA_MAX_ITER,30,0.01));
+  let i=0;ms.forEach(m=>m.pts=m.pts.map(()=>{const p=[c.data32F[i*2],c.data32F[i*2+1]];i++;return p}));
+  c.delete();
+}
+
+/* ---------- pipeline ---------- */
+function W_(){return parseFloat($('cw').value)} function H_(){return parseFloat($('ch').value)}
+function M_(){return parseFloat($('cm').value)}
+function worldTL(id){const W=W_(),H=H_();return [[0,0],[W,0],[0,H],[W,H]][id]}
+function worldPts(id){const m=M_(),[x,y]=worldTL(id);return [[x,y],[x+m,y],[x+m,y+m],[x,y+m]]}
+
+function show(cid,mat){const c=$(cid);cv.imshow(c,mat);}
+
+function run(){
+  ['aruco','homo','seg','up','meas'].forEach(k=>mark(k,''));
+  $('qcard').style.display='';$('dbg').style.display='';$('rcard').style.display='none';
+  const t0=performance.now();
+  // --- load & downscale
+  const full=cv.imread(imgEl);
+  const s=1800/Math.max(full.cols,full.rows);
+  const sm=new cv.Mat(); cv.resize(full,sm,new cv.Size(0,0),s,s,cv.INTER_AREA); full.delete();
+  const gray=new cv.Mat(); cv.cvtColor(sm,gray,cv.COLOR_RGBA2GRAY);
+
+  // --- aruco
+  mark('aruco','run');
+  let ms=detectMarkers(gray);
+  ms=ms.filter(m=>m.id<4);
+  if(ms.length<4){mark('aruco','err',`只找到 ${ms.length} 個 (${ms.map(m=>m.id).join(',')})，需要 4 個`);
+    $('q1').textContent=ms.map(m=>'ID'+m.id).join(' ')||'無';sm.delete();gray.delete();return;}
+  try{ if(cv.cornerSubPix) refine(gray,ms); }catch(err){ console.warn('subpix skipped',err); }
+  mark('aruco','ok',`ID ${ms.map(m=>m.id).sort().join(', ')}`);
+  $('q1').textContent=ms.length+' / 4';
+
+  // --- homography
+  mark('homo','run');
+  // pass 1: coarse homography from the four marker CENTRES (rotation-agnostic)
+  const cS=[],cD=[];
+  ms.forEach(m=>{const c=m.pts.reduce((a,p)=>[a[0]+p[0]/4,a[1]+p[1]/4],[0,0]);
+    const w=worldPts(m.id), wc=w.reduce((a,p)=>[a[0]+p[0]/4,a[1]+p[1]/4],[0,0]);
+    cS.push(c[0],c[1]); cD.push(wc[0]*P,wc[1]*P);});
+  const cSm=cv.matFromArray(4,1,cv.CV_32FC2,cS), cDm=cv.matFromArray(4,1,cv.CV_32FC2,cD);
+  const H0=cv.findHomography(cSm,cDm,0);
+  // pass 2: assign every corner to its nearest world corner under H0
+  const S=[],D=[];
+  ms.forEach(m=>{
+    const w=worldPts(m.id).map(p=>[p[0]*P,p[1]*P]);
+    const q=cv.matFromArray(4,1,cv.CV_32FC2,m.pts.flat()), pw=new cv.Mat();
+    cv.perspectiveTransform(q,pw,H0);
+    const used=[];
+    for(let k=0;k<4;k++){
+      const px=pw.data32F[k*2],py=pw.data32F[k*2+1];
+      let bi=-1,bd=1e18;
+      for(let j=0;j<4;j++){if(used.includes(j))continue;
+        const d=(w[j][0]-px)**2+(w[j][1]-py)**2; if(d<bd){bd=d;bi=j}}
+      used.push(bi); S.push(m.pts[k][0],m.pts[k][1]); D.push(w[bi][0],w[bi][1]);
+    }
+    q.delete();pw.delete();});
+  cSm.delete();cDm.delete();H0.delete();
+  const sMat=cv.matFromArray(S.length/2,1,cv.CV_32FC2,S), dMat=cv.matFromArray(D.length/2,1,cv.CV_32FC2,D);
+  const Hm=cv.findHomography(sMat,dMat,0);   // correspondences already verified -> least squares
+  const back=new cv.Mat(); cv.perspectiveTransform(dMat,back,invMat(Hm));
+  const res=[];for(let i=0;i<S.length/2;i++)res.push(Math.hypot(back.data32F[i*2]-S[i*2],back.data32F[i*2+1]-S[i*2+1]));
+  let e=res.reduce((a,b)=>a+b,0)/res.length; back.delete();
+  $('q2').textContent=e.toFixed(2)+' px';
+  mark(e<3?'homo':'homo',e<3?'ok':'err',e<3?`誤差 ${e.toFixed(2)} px`:`誤差過大 ${e.toFixed(2)} px — 檢查 W/H/m 常數`);
+  const CW=Math.round((W_()+M_())*P), CH=Math.round((H_()+M_())*P);
+  const rect=new cv.Mat(); cv.warpPerspective(sMat?sm:sm,rect,Hm,new cv.Size(CW,CH));
+  sMat.delete();dMat.delete();Hm.delete();sm.delete();gray.delete();
+  show('c1',rect);
+
+  // --- segment inside marker rectangle
+  mark('seg','run');
+  const m=M_();
+  const roiRect=new cv.Rect(Math.round(m*P),Math.round(m*P),Math.round((W_()-m)*P),Math.round((H_()-m)*P));
+  const roi=rect.roi(roiRect);
+  const g=new cv.Mat(); cv.cvtColor(roi,g,cv.COLOR_RGBA2GRAY);
+  cv.GaussianBlur(g,g,new cv.Size(5,5),0);
+  const th=new cv.Mat(); cv.threshold(g,th,0,255,cv.THRESH_BINARY_INV+cv.THRESH_OTSU);
+  const k9=cv.getStructuringElement(cv.MORPH_RECT,new cv.Size(9,9));
+  cv.morphologyEx(th,th,cv.MORPH_OPEN,k9);
+  const lab=new cv.Mat(),stats=new cv.Mat(),cen=new cv.Mat();
+  const n=cv.connectedComponentsWithStats(th,lab,stats,cen);
+  let bi=-1,ba=0;for(let i=1;i<n;i++){const a=stats.intPtr(i,4)[0];if(a>ba){ba=a;bi=i}}
+  if(bi<0){mark('seg','err','找不到衣物');return}
+  const lab8=new cv.Mat(); lab.convertTo(lab8,cv.CV_8U);
+  const mask=new cv.Mat(); cv.inRange(lab8,new cv.Mat(lab8.rows,lab8.cols,cv.CV_8U,new cv.Scalar(bi)),
+                                       new cv.Mat(lab8.rows,lab8.cols,cv.CV_8U,new cv.Scalar(bi)),mask);
+  lab8.delete();
+  const cts=new cv.MatVector(),hi=new cv.Mat();
+  cv.findContours(mask,cts,hi,cv.RETR_EXTERNAL,cv.CHAIN_APPROX_NONE);
+  mask.setTo(new cv.Scalar(0)); cv.drawContours(mask,cts,-1,new cv.Scalar(255),-1);
+  const k15=cv.getStructuringElement(cv.MORPH_RECT,new cv.Size(15,15));
+  cv.morphologyEx(mask,mask,cv.MORPH_CLOSE,k15);
+  const areaCm2=cv.countNonZero(mask)/(P*P)/100;
+  mark('seg','ok',`面積 ${areaCm2.toFixed(0)} cm²`);
+  show('c2',mask);
+  g.delete();th.delete();k9.delete();k15.delete();lab.delete();stats.delete();cen.delete();cts.delete();hi.delete();roi.delete();
+
+  // --- upright by mirror symmetry
+  mark('up','run');
+  const {up,ang,iou}=upright(mask);
+  $('q3').textContent=ang.toFixed(1)+'°'; $('q4').textContent=iou.toFixed(3);
+  mark(iou>0.75?'up':'up',iou>0.75?'ok':'err',
+    iou>0.75?`角度 ${ang.toFixed(1)}°、IoU ${iou.toFixed(3)}`:`IoU ${iou.toFixed(3)} 偏低 — 袖子可能沒攤平`);
+  show('c3',up);
+
+  // --- measure
+  mark('meas','run');
+  const R=measure(up);
+  drawProfile(R);
+  ST={up,R,rect,mask,ang};
+  $('vL').textContent=(R.length/10).toFixed(1);
+  $('vC').textContent=(R.chest/10).toFixed(1);
+  $('vS').textContent=(R.shoulder/10).toFixed(1);
+  $('vW').textContent=(R.hem/10).toFixed(1);
+  mark('meas','ok',`共 ${(performance.now()-t0|0)} ms`);
+  $('rcard').style.display='';
+  initOverlay();
+}
+function invMat(H){const I=new cv.Mat();cv.invert(H,I);return I}
+
+/* ---------- upright ---------- */
+/* row-wise pixel count, done natively (Mat.data row stride is unreliable in opencv.js) */
+function widths(m){const r=new cv.Mat();
+ cv.reduce(m,r,1,cv.REDUCE_SUM,cv.CV_32S);
+ const w=[];for(let y=0;y<m.rows;y++)w.push(r.intPtr(y,0)[0]/255);
+ r.delete();return w}
+function rowSpanOf(m,y){let a=-1,b=-1;
+ for(let x=0;x<m.cols;x++) if(m.ucharPtr(y,x)[0]){ if(a<0)a=x; b=x }
+ return [a,b]}
+
+function iouAt(small,C,a){
+  const M=cv.getRotationMatrix2D(new cv.Point(C[0],C[1]),a,1);
+  const R=new cv.Mat(); cv.warpAffine(small,R,M,new cv.Size(small.cols,small.rows),cv.INTER_NEAREST);
+  const F=new cv.Mat(); const Mf=cv.matFromArray(2,3,cv.CV_64F,[-1,0,2*C[0],0,1,0]);
+  cv.warpAffine(R,F,Mf,new cv.Size(small.cols,small.rows),cv.INTER_NEAREST);
+  const A=new cv.Mat(),O=new cv.Mat();
+  cv.bitwise_and(R,F,A); cv.bitwise_or(R,F,O);
+  const inter=cv.countNonZero(A), uni=cv.countNonZero(O);
+  A.delete();O.delete();M.delete();Mf.delete();F.delete();
+  return {v:uni?inter/uni:0,R};
+}
+function upright(mask){
+  const q=0.25;                                   // search on a 4x-downscaled copy
+  const sm=new cv.Mat(); cv.resize(mask,sm,new cv.Size(0,0),q,q,cv.INTER_NEAREST);
+  const pad=Math.round(Math.max(sm.rows,sm.cols)*0.35);
+  const big=new cv.Mat(); cv.copyMakeBorder(sm,big,pad,pad,pad,pad,cv.BORDER_CONSTANT,new cv.Scalar(0));
+  const mo=cv.moments(big); const C=[mo.m10/mo.m00,mo.m01/mo.m00];
+  let bA=0,bV=-1;
+  for(let a=-90;a<90;a+=2){const r=iouAt(big,C,a);if(r.v>bV){bV=r.v;bA=a}r.R.delete()}
+  for(let a=bA-2;a<=bA+2;a+=0.25){const r=iouAt(big,C,a);if(r.v>bV){bV=r.v;bA=a}r.R.delete()}
+  sm.delete();big.delete();
+  // apply at full resolution
+  const pad2=Math.round(Math.max(mask.rows,mask.cols)*0.35);
+  const B=new cv.Mat(); cv.copyMakeBorder(mask,B,pad2,pad2,pad2,pad2,cv.BORDER_CONSTANT,new cv.Scalar(0));
+  const mo2=cv.moments(B);
+  const Mr=cv.getRotationMatrix2D(new cv.Point(mo2.m10/mo2.m00,mo2.m01/mo2.m00),bA,1);
+  const R=new cv.Mat(); cv.warpAffine(B,R,Mr,new cv.Size(B.cols,B.rows),cv.INTER_NEAREST);
+  cv.threshold(R,R,127,255,cv.THRESH_BINARY); B.delete();Mr.delete();
+  const bb=cv.boundingRect(R);
+  const crop=R.roi(bb).clone(); R.delete();
+  const w=widths(crop); let mi=0;for(let i=1;i<w.length;i++)if(w[i]>w[mi])mi=i;
+  let ang=bA;
+  if(mi>w.length*0.5){cv.flip(crop,crop,-1);ang+=180}
+  return {up:crop,ang,iou:bV};
+}
+
+/* ---------- measurement ---------- */
+function smooth(a,k){const o=[],h=k>>1;for(let i=0;i<a.length;i++){let s=0,n=0;
+ for(let j=Math.max(0,i-h);j<=Math.min(a.length-1,i+h);j++){s+=a[j];n++}o.push(s/n)}return o}
+function measure(up){
+  const h=up.rows, w=widths(up), prof=w.map(v=>v/P);
+  const rowSpan=y=>rowSpanOf(up,y);
+  const R={length:h/P, _h:h, _w:up.cols, prof};
+  // hem 10 mm above bottom
+  const yh=h-1-Math.round(10*P); R.hem=prof[yh]; R._yh=yh;
+  // sleeve max
+  let ymax=0;for(let i=1;i<h;i++)if(prof[i]>prof[ymax])ymax=i; R._ymax=ymax;
+  // armpit: minimum width below sleeve
+  const lo=Math.min(ymax+Math.round(5*P),h-2), hi=Math.max(lo+2,Math.round(h*0.80));
+  let yp=lo;for(let i=lo;i<hi;i++)if(prof[i]<prof[yp])yp=i;
+  R.chest=prof[yp]; R._yp=yp;
+  // shoulder (initial guess only — flagged for manual confirmation):
+  // search is restricted to rows already at shoulder scale, so the neck taper
+  // and the sleeve cap can never be picked
+  const sm=smooth(prof,31);
+  const d1=sm.map((v,i)=>i?v-sm[i-1]:0), d2=d1.map((v,i)=>i?v-d1[i-1]:0);
+  const lim=0.60*prof[ymax];
+  let s0=0; while(s0<ymax&&prof[s0]<lim) s0++;
+  s0=Math.max(s0,Math.round(h*0.02));
+  const s1=Math.max(s0+3,ymax);
+  let ys=s0; for(let i=s0;i<s1;i++) if(d2[i]<d2[ys]) ys=i;
+  R.shoulder=prof[ys]; R._ys=ys;
+  R.span=(y)=>rowSpan(y);
+  return R;
+}
+function drawProfile(R){
+  const c=$('c4'),W=360,H=Math.round(360*R._h/R._w);
+  c.width=W;c.height=H;const x=c.getContext('2d');
+  x.fillStyle='#0f1115';x.fillRect(0,0,W,H);
+  const mx=Math.max(...R.prof);
+  x.strokeStyle='#4ea1ff';x.beginPath();
+  for(let i=0;i<R.prof.length;i++){const px=R.prof[i]/mx*W, py=i/R._h*H;i?x.lineTo(px,py):x.moveTo(px,py)}
+  x.stroke();
+  const line=(y,col,t)=>{const py=y/R._h*H;x.strokeStyle=col;x.setLineDash([4,3]);
+    x.beginPath();x.moveTo(0,py);x.lineTo(W,py);x.stroke();x.setLineDash([]);
+    x.fillStyle=col;x.font='10px sans-serif';x.fillText(t,4,py-3)};
+  line(R._ys,'#ffb454','SHOULDER');line(R._yp,'#3ddc97','CHEST');line(R._yh,'#ff6b6b','WAIST');
+}
+
+/* ---------- interactive overlay ---------- */
+let HAND=[],drag=-1,OVW=0,OVH=0,BASE=null;
+function initOverlay(){
+  const {up,R}=ST;
+  BASE=document.createElement('canvas');
+  const tint=new cv.Mat(); cv.cvtColor(up,tint,cv.COLOR_GRAY2RGBA);
+  cv.imshow(BASE,tint); tint.delete();
+  const mk=(y,label,key,col)=>{const [a,c]=R.span(y);return {y,a,c,label,key,col}};
+  HAND=[mk(R._ys,'SHOULDER','shoulder','#ffb454'),
+        mk(R._yp,'CHEST','chest','#3ddc97'),
+        mk(R._yh,'WAIST','hem','#ff6b6b')];
+  const ov=$('ov');OVW=ov.width=up.cols;OVH=ov.height=up.rows;
+  paint();
+  const pos=e=>{const r=ov.getBoundingClientRect();const t=e.touches?e.touches[0]:e;
+    return [(t.clientX-r.left)/r.width*OVW,(t.clientY-r.top)/r.height*OVH]};
+  const down=e=>{const [x,y]=pos(e);let bd=1e9;drag=-1;
+    HAND.forEach((h,i)=>{[[h.a,h.y],[h.c,h.y]].forEach((p,j)=>{
+      const d=Math.hypot(p[0]-x,p[1]-y);if(d<bd&&d<60){bd=d;drag=i*2+j}})});
+    if(drag>=0)e.preventDefault()};
+  const move=e=>{if(drag<0)return;e.preventDefault();const [x,y]=pos(e);
+    const h=HAND[drag>>1];h.y=Math.max(0,Math.min(OVH-1,Math.round(y)));
+    if(drag&1)h.c=Math.round(x);else h.a=Math.round(x);
+    recalc();paint()};
+  const upE=()=>drag=-1;
+  ov.onmousedown=down;ov.onmousemove=move;window.onmouseup=upE;
+  ov.ontouchstart=down;ov.ontouchmove=move;ov.ontouchend=upE;
+}
+function recalc(){
+  const map={shoulder:'vS',chest:'vC',hem:'vW'};
+  HAND.forEach(h=>{const mm=Math.abs(h.c-h.a)/P;$(map[h.key]).textContent=(mm/10).toFixed(1);
+    $(map[h.key]).closest('.m').className='m man'});
+  $('vL').textContent=(ST.R.length/10).toFixed(1);
+}
+function paint(){
+  const x=$('ov').getContext('2d');
+  x.clearRect(0,0,OVW,OVH);x.drawImage(BASE,0,0);
+  x.lineWidth=Math.max(2,OVW/300);x.font=`${Math.round(OVW/26)}px sans-serif`;x.textBaseline='middle';
+  HAND.forEach(h=>{
+    x.strokeStyle=h.col;x.fillStyle=h.col;
+    x.beginPath();x.moveTo(h.a,h.y);x.lineTo(h.c,h.y);x.stroke();
+    [[h.a,h.y],[h.c,h.y]].forEach(p=>{x.beginPath();x.arc(p[0],p[1],OVW/45,0,7);x.fill()});
+    const t=`${h.label} ${(Math.abs(h.c-h.a)/P/10).toFixed(1)} cm`;
+    const cx=(h.a+h.c)/2, tw=x.measureText(t).width;
+    x.fillStyle='rgba(0,0,0,.65)';x.fillRect(cx-tw/2-6,h.y-OVW/40,tw+12,OVW/20);
+    x.fillStyle=h.col;x.textAlign='center';x.fillText(t,cx,h.y);
+  });
+  // length arrow
+  const lx=OVW*0.06;x.strokeStyle='#4ea1ff';x.fillStyle='#4ea1ff';
+  x.beginPath();x.moveTo(lx,0);x.lineTo(lx,OVH-1);x.stroke();
+  const t=`LENGTH ${(ST.R.length/10).toFixed(1)} cm`;
+  x.save();x.translate(lx+OVW/28,OVH/2);x.rotate(-Math.PI/2);
+  x.textAlign='center';x.fillText(t,0,0);x.restore();
+  x.textAlign='left';x.fillStyle='rgba(255,255,255,.35)';
+  x.fillText('measured with ArUco calibration',OVW*0.14,OVH-OVW/30);
+}
+$('dl').onclick=()=>{const a=document.createElement('a');
+  a.download='measured.png';a.href=$('ov').toDataURL('image/png');a.click()};
+
+</script>
+</body></html>
