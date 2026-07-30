@@ -75,13 +75,19 @@ td{padding:4px 0;border-bottom:1px solid var(--line)}td:last-child{text-align:ri
 
 <div class="card" id="rcard" style="display:none">
   <div class="res">
-    <div class="m auto"><div class="k">LENGTH 衣長</div><div class="v"><span id="vL">—</span> <small>cm</small></div></div>
-    <div class="m auto"><div class="k">CHEST 胸寬(腋下)</div><div class="v"><span id="vC">—</span> <small>cm</small></div></div>
-    <div class="m man"><div class="k">SHOULDER 肩寬</div><div class="v"><span id="vS">—</span> <small>cm</small></div></div>
-    <div class="m auto"><div class="k">WAIST 下擺</div><div class="v"><span id="vW">—</span> <small>cm</small></div></div>
+    <div class="m auto"><div class="k">衣長 LENGTH</div><div class="v"><span id="vL">—</span> <small>cm</small></div></div>
+    <div class="m auto"><div class="k">胸寬 CHEST (腋下)</div><div class="v"><span id="vC">—</span> <small>cm</small></div></div>
+    <div class="m man"><div class="k">肩寬 SHOULDER</div><div class="v"><span id="vS">—</span> <small>cm</small></div></div>
+    <div class="m auto"><div class="k">腰寬 WAIST</div><div class="v"><span id="vW">—</span> <small>cm</small></div></div>
   </div>
   <div class="hint">藍框 = 自動可靠　橙框 = 建議人工確認。拖曳圖上的圓點可修正端點。</div>
   <div style="margin-top:10px"><canvas id="ov"></canvas></div>
+  <div style="margin-top:12px">
+    <div class="k" style="font-size:11px;color:var(--dim);letter-spacing:.5px;margin-bottom:5px">品名（選填，會加在檔名前）</div>
+    <input id="fname" placeholder="例：adidas 活動T L 深藍"
+      style="width:100%;background:#20252f;color:#e6e8ec;border:1px solid #2a2f3a;border-radius:8px;padding:10px;font-size:14px">
+    <div class="hint" style="margin-top:6px">檔名：<span id="fpreview" style="color:var(--fg)">—</span></div>
+  </div>
   <div class="row" style="margin-top:10px">
     <button class="sec" id="dl">下載標註圖 (JPG)</button>
   </div>
@@ -336,7 +342,7 @@ function run(){
   $('vW').textContent=(R.hem/10).toFixed(1);
   mark('meas','ok',`共 ${(performance.now()-t0|0)} ms`);
   $('rcard').style.display='';
-  initOverlay();
+  initOverlay(); refreshName();
 }
 function invMat(H){const I=new cv.Mat();cv.invert(H,I);return I}
 
@@ -444,9 +450,9 @@ function initOverlay(){
   ST.upColor.copyTo(out,up);            // copy garment pixels only where the mask is set
   cv.imshow(BASE,out); out.delete();
   const mk=(y,label,key,col)=>{const [a,c]=R.span(y);return {y,a,c,label,key,col}};
-  HAND=[mk(R._ys,'SHOULDER','shoulder','#ffb454'),
-        mk(R._yp,'CHEST','chest','#3ddc97'),
-        mk(R._yh,'WAIST','hem','#ff6b6b')];
+  HAND=[mk(R._ys,'肩寬','shoulder','#e08c1e'),
+        mk(R._yp,'胸寬','chest','#12a06a'),
+        mk(R._yh,'腰寬','hem','#d94a4a')];
   PAD=Math.round(up.cols*0.10);
   const ov=$('ov');OVW=ov.width=up.cols+2*PAD;OVH=ov.height=up.rows+2*PAD;
   paint();
@@ -469,6 +475,7 @@ function recalc(){
   HAND.forEach(h=>{const mm=Math.abs(h.c-h.a)/P;$(map[h.key]).textContent=(mm/10).toFixed(1);
     $(map[h.key]).closest('.m').className='m man'});
   $('vL').textContent=(ST.R.length/10).toFixed(1);
+  refreshName();
 }
 function paint(){
   const x=$('ov').getContext('2d');
@@ -500,14 +507,21 @@ function paint(){
   halo(()=>{x.beginPath();x.moveTo(lx,y0);x.lineTo(lx,y1);x.stroke();
     [y0,y1].forEach(py=>{x.beginPath();x.moveTo(lx-R,py);x.lineTo(lx+R,py);x.stroke()})});
   x.save();x.translate(lx+FS*1.0,(y0+y1)/2);x.rotate(-Math.PI/2);
-  label(`LENGTH ${(ST.R.length/10).toFixed(1)} cm`,0,0,col);x.restore();
+  label(`衣長 ${(ST.R.length/10).toFixed(1)} cm`,0,0,col);x.restore();
   // watermark
   x.textAlign='right';x.font=`${FS*0.6}px -apple-system,system-ui,sans-serif`;
   x.fillStyle='rgba(0,0,0,.28)';
-  x.fillText('measured with ArUco calibration',OVW-FS*0.5,OVH-FS*0.45);
+  x.fillText('ArUco 校正量測',OVW-FS*0.5,OVH-FS*0.45);
 }
+function autoName(){
+  const g=id=>$(id).textContent.replace('.','');       // 63.8 -> 638
+  const n=($('fname').value||'').trim().replace(/[\\/:*?"<>|\s]+/g,'_');
+  return `${n?n+'_':''}肩${g('vS')}_胸${g('vC')}_腰${g('vW')}_長${g('vL')}`;
+}
+function refreshName(){ $('fpreview').textContent=autoName()+'.jpg' }
+$('fname').oninput=refreshName;
 $('dl').onclick=()=>{const a=document.createElement('a');
-  a.download='measured.jpg';a.href=$('ov').toDataURL('image/jpeg',0.92);a.click()};
+  a.download=autoName()+'.jpg';a.href=$('ov').toDataURL('image/jpeg',0.92);a.click()};
 
 </script>
 </body></html>
