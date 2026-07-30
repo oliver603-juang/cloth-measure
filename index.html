@@ -83,7 +83,7 @@ td{padding:4px 0;border-bottom:1px solid var(--line)}td:last-child{text-align:ri
   <div class="hint">藍框 = 自動可靠　橙框 = 建議人工確認。拖曳圖上的圓點可修正端點。</div>
   <div style="margin-top:10px"><canvas id="ov"></canvas></div>
   <div class="row" style="margin-top:10px">
-    <button class="sec" id="dl">下載標註圖</button>
+    <button class="sec" id="dl">下載標註圖 (JPG)</button>
   </div>
 </div>
 
@@ -293,7 +293,7 @@ function run(){
   mark('seg','run');
   const m=M_();
   const roiRect=new cv.Rect(Math.round(m*P),Math.round(m*P),Math.round((W_()-m)*P),Math.round((H_()-m)*P));
-  const roi=rect.roi(roiRect);
+  const roi=rect.roi(roiRect).clone();
   const g=new cv.Mat(); cv.cvtColor(roi,g,cv.COLOR_RGBA2GRAY);
   cv.GaussianBlur(g,g,new cv.Size(5,5),0);
   const th=new cv.Mat(); cv.threshold(g,th,0,255,cv.THRESH_BINARY_INV+cv.THRESH_OTSU);
@@ -315,11 +315,11 @@ function run(){
   const areaCm2=cv.countNonZero(mask)/(P*P)/100;
   mark('seg','ok',`面積 ${areaCm2.toFixed(0)} cm²`);
   show('c2',mask);
-  g.delete();th.delete();k9.delete();k15.delete();lab.delete();stats.delete();cen.delete();cts.delete();hi.delete();roi.delete();
+  g.delete();th.delete();k9.delete();k15.delete();lab.delete();stats.delete();cen.delete();cts.delete();hi.delete();
 
   // --- upright by mirror symmetry
   mark('up','run');
-  const {up,ang,iou}=upright(mask);
+  const {up,upColor,ang,iou}=upright(mask,roi);
   $('q3').textContent=ang.toFixed(1)+'°'; $('q4').textContent=iou.toFixed(3);
   mark(iou>0.75?'up':'up',iou>0.75?'ok':'err',
     iou>0.75?`角度 ${ang.toFixed(1)}°、IoU ${iou.toFixed(3)}`:`IoU ${iou.toFixed(3)} 偏低 — 袖子可能沒攤平`);
@@ -329,7 +329,7 @@ function run(){
   mark('meas','run');
   const R=measure(up);
   drawProfile(R);
-  ST={up,R,rect,mask,ang};
+  ST={up,upColor,R,rect,mask,ang};
   $('vL').textContent=(R.length/10).toFixed(1);
   $('vC').textContent=(R.chest/10).toFixed(1);
   $('vS').textContent=(R.shoulder/10).toFixed(1);
@@ -361,7 +361,7 @@ function iouAt(small,C,a){
   A.delete();O.delete();M.delete();Mf.delete();F.delete();
   return {v:uni?inter/uni:0,R};
 }
-function upright(mask){
+function upright(mask,colour){
   const q=0.25;                                   // search on a 4x-downscaled copy
   const sm=new cv.Mat(); cv.resize(mask,sm,new cv.Size(0,0),q,q,cv.INTER_NEAREST);
   const pad=Math.round(Math.max(sm.rows,sm.cols)*0.35);
@@ -377,13 +377,19 @@ function upright(mask){
   const mo2=cv.moments(B);
   const Mr=cv.getRotationMatrix2D(new cv.Point(mo2.m10/mo2.m00,mo2.m01/mo2.m00),bA,1);
   const R=new cv.Mat(); cv.warpAffine(B,R,Mr,new cv.Size(B.cols,B.rows),cv.INTER_NEAREST);
-  cv.threshold(R,R,127,255,cv.THRESH_BINARY); B.delete();Mr.delete();
+  cv.threshold(R,R,127,255,cv.THRESH_BINARY); B.delete();
+  // the colour image goes through exactly the same pad -> rotate -> crop
+  const CB=new cv.Mat(); cv.copyMakeBorder(colour,CB,pad2,pad2,pad2,pad2,cv.BORDER_CONSTANT,new cv.Scalar(255,255,255,255));
+  const CR=new cv.Mat(); cv.warpAffine(CB,CR,Mr,new cv.Size(CB.cols,CB.rows),cv.INTER_LINEAR,
+                                       cv.BORDER_CONSTANT,new cv.Scalar(255,255,255,255));
+  CB.delete();Mr.delete();
   const bb=cv.boundingRect(R);
   const crop=R.roi(bb).clone(); R.delete();
+  const cropC=CR.roi(bb).clone(); CR.delete();
   const w=widths(crop); let mi=0;for(let i=1;i<w.length;i++)if(w[i]>w[mi])mi=i;
   let ang=bA;
-  if(mi>w.length*0.5){cv.flip(crop,crop,-1);ang+=180}
-  return {up:crop,ang,iou:bV};
+  if(mi>w.length*0.5){cv.flip(crop,crop,-1);cv.flip(cropC,cropC,-1);ang+=180}
+  return {up:crop,upColor:cropC,ang,iou:bV};
 }
 
 /* ---------- measurement ---------- */
@@ -430,26 +436,28 @@ function drawProfile(R){
 }
 
 /* ---------- interactive overlay ---------- */
-let HAND=[],drag=-1,OVW=0,OVH=0,BASE=null;
+let HAND=[],drag=-1,OVW=0,OVH=0,BASE=null,PAD=0;
 function initOverlay(){
   const {up,R}=ST;
   BASE=document.createElement('canvas');
-  const tint=new cv.Mat(); cv.cvtColor(up,tint,cv.COLOR_GRAY2RGBA);
-  cv.imshow(BASE,tint); tint.delete();
+  const out=new cv.Mat(up.rows,up.cols,cv.CV_8UC4,new cv.Scalar(255,255,255,255));
+  ST.upColor.copyTo(out,up);            // copy garment pixels only where the mask is set
+  cv.imshow(BASE,out); out.delete();
   const mk=(y,label,key,col)=>{const [a,c]=R.span(y);return {y,a,c,label,key,col}};
   HAND=[mk(R._ys,'SHOULDER','shoulder','#ffb454'),
         mk(R._yp,'CHEST','chest','#3ddc97'),
         mk(R._yh,'WAIST','hem','#ff6b6b')];
-  const ov=$('ov');OVW=ov.width=up.cols;OVH=ov.height=up.rows;
+  PAD=Math.round(up.cols*0.10);
+  const ov=$('ov');OVW=ov.width=up.cols+2*PAD;OVH=ov.height=up.rows+2*PAD;
   paint();
   const pos=e=>{const r=ov.getBoundingClientRect();const t=e.touches?e.touches[0]:e;
-    return [(t.clientX-r.left)/r.width*OVW,(t.clientY-r.top)/r.height*OVH]};
+    return [(t.clientX-r.left)/r.width*OVW-PAD,(t.clientY-r.top)/r.height*OVH-PAD]};
   const down=e=>{const [x,y]=pos(e);let bd=1e9;drag=-1;
     HAND.forEach((h,i)=>{[[h.a,h.y],[h.c,h.y]].forEach((p,j)=>{
       const d=Math.hypot(p[0]-x,p[1]-y);if(d<bd&&d<60){bd=d;drag=i*2+j}})});
     if(drag>=0)e.preventDefault()};
   const move=e=>{if(drag<0)return;e.preventDefault();const [x,y]=pos(e);
-    const h=HAND[drag>>1];h.y=Math.max(0,Math.min(OVH-1,Math.round(y)));
+    const h=HAND[drag>>1];h.y=Math.max(0,Math.min(BASE.height-1,Math.round(y)));
     if(drag&1)h.c=Math.round(x);else h.a=Math.round(x);
     recalc();paint()};
   const upE=()=>drag=-1;
@@ -464,28 +472,42 @@ function recalc(){
 }
 function paint(){
   const x=$('ov').getContext('2d');
-  x.clearRect(0,0,OVW,OVH);x.drawImage(BASE,0,0);
-  x.lineWidth=Math.max(2,OVW/300);x.font=`${Math.round(OVW/26)}px sans-serif`;x.textBaseline='middle';
+  x.fillStyle='#fff';x.fillRect(0,0,OVW,OVH);x.drawImage(BASE,PAD,PAD);
+  const U=OVW/1000;                                   // scale unit, keeps output resolution-independent
+  const LW=Math.max(3,7*U), R=Math.max(7,14*U), FS=Math.max(16,34*U);
+  x.font=`600 ${FS}px -apple-system,"Noto Sans TC",system-ui,sans-serif`;
+  x.textBaseline='middle';
+  const halo=(fn)=>{x.save();x.lineWidth=LW*2.2;x.strokeStyle='rgba(255,255,255,.9)';fn();x.restore();fn()};
+  const label=(t,cx,cy,col)=>{
+    x.textAlign='center';const w=x.measureText(t).width,h=FS*1.5,r=h/2;
+    x.beginPath();x.roundRect(cx-w/2-h*0.4,cy-h/2,w+h*0.8,h,r);
+    x.fillStyle=col;x.fill();
+    x.fillStyle='#fff';x.fillText(t,cx,cy+FS*0.05);
+  };
   HAND.forEach(h=>{
-    x.strokeStyle=h.col;x.fillStyle=h.col;
-    x.beginPath();x.moveTo(h.a,h.y);x.lineTo(h.c,h.y);x.stroke();
-    [[h.a,h.y],[h.c,h.y]].forEach(p=>{x.beginPath();x.arc(p[0],p[1],OVW/45,0,7);x.fill()});
-    const t=`${h.label} ${(Math.abs(h.c-h.a)/P/10).toFixed(1)} cm`;
-    const cx=(h.a+h.c)/2, tw=x.measureText(t).width;
-    x.fillStyle='rgba(0,0,0,.65)';x.fillRect(cx-tw/2-6,h.y-OVW/40,tw+12,OVW/20);
-    x.fillStyle=h.col;x.textAlign='center';x.fillText(t,cx,h.y);
+    const a=h.a+PAD,c=h.c+PAD,y=h.y+PAD;
+    x.lineWidth=LW;x.strokeStyle=h.col;x.fillStyle=h.col;
+    halo(()=>{x.beginPath();x.moveTo(a,y);x.lineTo(c,y);x.stroke();
+      [a,c].forEach(px=>{x.beginPath();x.moveTo(px,y-R);x.lineTo(px,y+R);x.stroke()})});
+    x.fillStyle=h.col;
+    [a,c].forEach(px=>{x.beginPath();x.arc(px,y,R,0,7);
+      x.fill();x.lineWidth=LW*0.6;x.strokeStyle='#fff';x.stroke()});
+    label(`${h.label} ${(Math.abs(h.c-h.a)/P/10).toFixed(1)} cm`,(a+c)/2,y,h.col);
   });
-  // length arrow
-  const lx=OVW*0.06;x.strokeStyle='#4ea1ff';x.fillStyle='#4ea1ff';
-  x.beginPath();x.moveTo(lx,0);x.lineTo(lx,OVH-1);x.stroke();
-  const t=`LENGTH ${(ST.R.length/10).toFixed(1)} cm`;
-  x.save();x.translate(lx+OVW/28,OVH/2);x.rotate(-Math.PI/2);
-  x.textAlign='center';x.fillText(t,0,0);x.restore();
-  x.textAlign='left';x.fillStyle='rgba(255,255,255,.35)';
-  x.fillText('measured with ArUco calibration',OVW*0.14,OVH-OVW/30);
+  // length arrow down the left margin
+  const lx=PAD*0.45, col='#2f7fd6', y0=PAD, y1=PAD+BASE.height;
+  x.lineWidth=LW;x.strokeStyle=col;x.fillStyle=col;
+  halo(()=>{x.beginPath();x.moveTo(lx,y0);x.lineTo(lx,y1);x.stroke();
+    [y0,y1].forEach(py=>{x.beginPath();x.moveTo(lx-R,py);x.lineTo(lx+R,py);x.stroke()})});
+  x.save();x.translate(lx+FS*1.0,(y0+y1)/2);x.rotate(-Math.PI/2);
+  label(`LENGTH ${(ST.R.length/10).toFixed(1)} cm`,0,0,col);x.restore();
+  // watermark
+  x.textAlign='right';x.font=`${FS*0.6}px -apple-system,system-ui,sans-serif`;
+  x.fillStyle='rgba(0,0,0,.28)';
+  x.fillText('measured with ArUco calibration',OVW-FS*0.5,OVH-FS*0.45);
 }
 $('dl').onclick=()=>{const a=document.createElement('a');
-  a.download='measured.png';a.href=$('ov').toDataURL('image/png');a.click()};
+  a.download='measured.jpg';a.href=$('ov').toDataURL('image/jpeg',0.92);a.click()};
 
 </script>
 </body></html>
