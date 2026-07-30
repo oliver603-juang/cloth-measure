@@ -114,20 +114,29 @@ initSteps();
 
 /* ---------- opencv ---------- */
 mark('load','run','下載中…');
-const sc=document.createElement('script');
-const CDN='https://docs.opencv.org/4.10.0/opencv.js';
-sc.src=(new URLSearchParams(location.search)).get('cv')||'./opencv.js';
-sc.onload=()=>{const go=()=>{cvReady=true;mark('load','ok','就緒');chk();};
- if(typeof cv==='undefined'){mark('load','err','cv 未定義');return}
- if(typeof cv.then==='function'){cv.then(m=>{window.cv=m;go()});}
- else if(cv.Mat){go();} else {cv.onRuntimeInitialized=go;}};
-sc.onerror=()=>{                                   // no local copy -> fall back to the CDN
-  if(sc.dataset.retry){mark('load','err','本機與 CDN 都載入失敗');return}
-  mark('load','run','本機無 opencv.js，改用 CDN…');
-  const s2=document.createElement('script');
-  s2.src=CDN; s2.dataset.retry='1'; s2.onload=sc.onload; s2.onerror=()=>mark('load','err','載入失敗，請檢查網路');
-  document.head.appendChild(s2);};
-document.head.appendChild(sc);
+const CV_SOURCES=[
+  './opencv.js',                                                                   // local copy, if committed
+  'https://cdn.jsdelivr.net/npm/@techstark/opencv-js@4.10.0-release.1/dist/opencv.js',
+  'https://unpkg.com/@techstark/opencv-js@4.10.0-release.1/dist/opencv.js',
+  'https://docs.opencv.org/4.10.0/opencv.js'
+];
+function loadCv(i){
+  const override=(new URLSearchParams(location.search)).get('cv');
+  const list=override?[override]:CV_SOURCES;
+  if(i>=list.length){mark('load','err','所有來源都載入失敗，請檢查網路');return}
+  const host=list[i].includes('://')?new URL(list[i]).host:'本機';
+  mark('load','run',`來源 ${i+1}/${list.length}：${host}`);
+  const el=document.createElement('script'); el.src=list[i];
+  el.onload=()=>{
+    const go=()=>{cvReady=true;mark('load','ok',`就緒（${host}）`);chk();};
+    if(typeof cv==='undefined'){loadCv(i+1);return}
+    if(typeof cv.then==='function'){cv.then(m=>{window.cv=m;go()},()=>loadCv(i+1));}
+    else if(cv.Mat){go();} else {cv.onRuntimeInitialized=go;}
+  };
+  el.onerror=()=>loadCv(i+1);
+  document.head.appendChild(el);
+}
+loadCv(0);
 
 $('fi').onchange=e=>{const f=e.target.files[0];if(!f)return;
  const im=new Image();im.onload=()=>{imgEl=im;chk();
