@@ -367,28 +367,16 @@ function run(){
   const m=M_();
   const roiRect=new cv.Rect(Math.round(m*P),Math.round(m*P),Math.round((W_()-m)*P),Math.round((H_()-m)*P));
   const roi=rect.roi(roiRect).clone();
-  const g=new cv.Mat(); cv.cvtColor(roi,g,cv.COLOR_RGBA2GRAY);
-  cv.GaussianBlur(g,g,new cv.Size(5,5),0);
-  const th=new cv.Mat(); cv.threshold(g,th,0,255,cv.THRESH_BINARY_INV+cv.THRESH_OTSU);
-  const k9=cv.getStructuringElement(cv.MORPH_RECT,new cv.Size(9,9));
-  cv.morphologyEx(th,th,cv.MORPH_OPEN,k9);
-  const lab=new cv.Mat(),stats=new cv.Mat(),cen=new cv.Mat();
-  const n=cv.connectedComponentsWithStats(th,lab,stats,cen);
-  let bi=-1,ba=0;for(let i=1;i<n;i++){const a=stats.intPtr(i,4)[0];if(a>ba){ba=a;bi=i}}
-  if(bi<0){mark('seg','err','找不到衣物');return}
-  const lab8=new cv.Mat(); lab.convertTo(lab8,cv.CV_8U);
-  const mask=new cv.Mat(); cv.inRange(lab8,new cv.Mat(lab8.rows,lab8.cols,cv.CV_8U,new cv.Scalar(bi)),
-                                       new cv.Mat(lab8.rows,lab8.cols,cv.CV_8U,new cv.Scalar(bi)),mask);
-  lab8.delete();
-  const cts=new cv.MatVector(),hi=new cv.Mat();
-  cv.findContours(mask,cts,hi,cv.RETR_EXTERNAL,cv.CHAIN_APPROX_NONE);
-  mask.setTo(new cv.Scalar(0)); cv.drawContours(mask,cts,-1,new cv.Scalar(255),-1);
-  const k15=cv.getStructuringElement(cv.MORPH_RECT,new cv.Size(15,15));
-  cv.morphologyEx(mask,mask,cv.MORPH_CLOSE,k15);
+  const segR=segment(roi);
+  if(!segR.mask){
+    mark('seg','err',segR.msg);
+    $('rcard').style.display='none';$('ncard').style.display='none';
+    rect.delete();roi.delete();return;
+  }
+  const mask=segR.mask;
   const areaCm2=cv.countNonZero(mask)/(P*P)/100;
-  mark('seg','ok',`面積 ${areaCm2.toFixed(0)} cm²`);
+  mark('seg','ok',`${segR.how}・面積 ${areaCm2.toFixed(0)} cm²（佔板面 ${(segR.frac*100).toFixed(0)}%）`);
   show('c2',mask);
-  g.delete();th.delete();k9.delete();k15.delete();lab.delete();stats.delete();cen.delete();cts.delete();hi.delete();
 
   // --- upright by mirror symmetry
   mark('up','run');
@@ -412,6 +400,99 @@ function run(){
   initOverlay(); fillDerived();
 }
 function invMat(H){const I=new cv.Mat();cv.invert(H,I);return I}
+
+/* ---------- segmentation ----------
+   Otsu on grey only separates by brightness, so a garment whose lightness overlaps
+   the board (e.g. a beige striped polo on a grey board) falls apart.  The primary
+   method instead models the background colour from a border band of the ROI and
+   thresholds the Mahalanobis distance to it, which uses chroma as well as lightness.
+   Otsu stays as a fallback; whichever produces a plausible area fraction wins.      */
+const AREA_MIN=0.08, AREA_MAX=0.75;
+
+function cleanMask(th){
+  const k9 =cv.getStructuringElement(cv.MORPH_RECT,new cv.Size(9,9));
+  const k41=cv.getStructuringElement(cv.MORPH_RECT,new cv.Size(41,41));
+  cv.morphologyEx(th,th,cv.MORPH_OPEN,k9);
+  cv.morphologyEx(th,th,cv.MORPH_CLOSE,k41);
+  k9.delete();k41.delete();
+  const lab=new cv.Mat(),stats=new cv.Mat(),cen=new cv.Mat();
+  const n=cv.connectedComponentsWithStats(th,lab,stats,cen);
+  let bi=-1,ba=0;
+  for(let i=1;i<n;i++){const a=stats.intPtr(i,4)[0];if(a>ba){ba=a;bi=i}}
+  let out=null;
+  if(bi>=0){
+    const lab8=new cv.Mat(); lab.convertTo(lab8,cv.CV_8U);
+    const lo=new cv.Mat(lab8.rows,lab8.cols,cv.CV_8U,new cv.Scalar(bi));
+    out=new cv.Mat(); cv.inRange(lab8,lo,lo,out); lab8.delete();lo.delete();
+    const cts=new cv.MatVector(),hi=new cv.Mat();
+    cv.findContours(out,cts,hi,cv.RETR_EXTERNAL,cv.CHAIN_APPROX_NONE);
+    out.setTo(new cv.Scalar(0)); cv.drawContours(out,cts,-1,new cv.Scalar(255),-1);
+    cts.delete();hi.delete();
+  }
+  lab.delete();stats.delete();cen.delete();
+  return out;
+}
+function inv3(c){                      // inverse of a symmetric 3x3, c = [c00,c01,c02,c11,c12,c22]
+  const [a,b,cc,d,e,f]=c;
+  const A=d*f-e*e, B=cc*e-b*f, C=b*e-cc*d;
+  let det=a*A+b*B+cc*C;
+  if(Math.abs(det)<1e-9) det=1e-9;
+  const D=a*f-cc*cc, E=cc*b-a*e, F=a*d-b*b;
+  return [A/det,B/det,C/det,D/det,E/det,F/det];   // [i00,i01,i02,i11,i12,i22]
+}
+function bgDistanceMask(roi){
+  const h=roi.rows,w=roi.cols;
+  const rgb=new cv.Mat(); cv.cvtColor(roi,rgb,cv.COLOR_RGBA2RGB);
+  cv.GaussianBlur(rgb,rgb,new cv.Size(7,7),0);
+  const lab8=new cv.Mat(); cv.cvtColor(rgb,lab8,cv.COLOR_RGB2Lab); rgb.delete();
+  const lab32=new cv.Mat(); lab8.convertTo(lab32,cv.CV_32F); lab8.delete();
+  // border band = background sample
+  const band=Math.round(Math.min(h,w)*0.05);
+  const bm=new cv.Mat.zeros(h,w,cv.CV_8U);
+  cv.rectangle(bm,new cv.Point(0,0),new cv.Point(w-1,h-1),new cv.Scalar(255),-1);
+  cv.rectangle(bm,new cv.Point(band,band),new cv.Point(w-1-band,h-1-band),new cv.Scalar(0),-1);
+  const ch=new cv.MatVector(); cv.split(lab32,ch); lab32.delete();
+  const C=[ch.get(0),ch.get(1),ch.get(2)];
+  const mu=C.map(c=>cv.mean(c,bm)[0]);
+  const t=new cv.Mat();
+  const cov=[];
+  for(const [i,j] of [[0,0],[0,1],[0,2],[1,1],[1,2],[2,2]]){
+    cv.multiply(C[i],C[j],t);
+    cov.push(cv.mean(t,bm)[0]-mu[i]*mu[j]);
+  }
+  cov[0]+=1e-3; cov[3]+=1e-3; cov[5]+=1e-3;      // ridge, keeps it invertible
+  const iv=inv3(cov);
+  C.forEach((c,i)=>c.convertTo(c,cv.CV_32F,1,-mu[i]));   // in place: d_i = ch_i - mu_i
+  const acc=new cv.Mat.zeros(h,w,cv.CV_32F);
+  const term=(i,j,k)=>{cv.multiply(C[i],C[j],t);cv.addWeighted(acc,1,t,k,0,acc)};
+  term(0,0,iv[0]); term(1,1,iv[3]); term(2,2,iv[5]);
+  term(0,1,2*iv[1]); term(0,2,2*iv[2]); term(1,2,2*iv[4]);
+  C.forEach(c=>c.delete()); ch.delete(); t.delete(); bm.delete();
+  cv.sqrt(acc,acc);
+  const d8=new cv.Mat(); cv.normalize(acc,d8,0,255,cv.NORM_MINMAX,cv.CV_8U); acc.delete();
+  const th=new cv.Mat(); cv.threshold(d8,th,0,255,cv.THRESH_BINARY+cv.THRESH_OTSU); d8.delete();
+  return th;
+}
+function otsuGreyMask(roi){
+  const g=new cv.Mat(); cv.cvtColor(roi,g,cv.COLOR_RGBA2GRAY);
+  cv.GaussianBlur(g,g,new cv.Size(5,5),0);
+  const th=new cv.Mat(); cv.threshold(g,th,0,255,cv.THRESH_BINARY_INV+cv.THRESH_OTSU); g.delete();
+  return th;
+}
+function segment(roi){
+  const tot=roi.rows*roi.cols, tried=[];
+  for(const [how,fn] of [['背景色差法',bgDistanceMask],['Otsu 亮度法',otsuGreyMask]]){
+    let raw=null,m=null;
+    try{ raw=fn(roi); m=cleanMask(raw); }catch(e){ tried.push(`${how} 失敗`); }
+    if(raw)raw.delete();
+    if(!m){ tried.push(`${how} 找不到區塊`); continue }
+    const frac=cv.countNonZero(m)/tot;
+    if(frac>=AREA_MIN&&frac<=AREA_MAX) return {mask:m,how,frac};
+    tried.push(`${how} ${(frac*100).toFixed(1)}%`);
+    m.delete();
+  }
+  return {mask:null,msg:`衣物與背景對比不足（${tried.join('、')}）。淺色衣物請改用深色背景。`};
+}
 
 /* ---------- upright ---------- */
 /* row-wise pixel count, done natively (Mat.data row stride is unreliable in opencv.js) */
@@ -472,25 +553,31 @@ function measure(up){
   const h=up.rows, w=widths(up), prof=w.map(v=>v/P);
   const rowSpan=y=>rowSpanOf(up,y);
   const R={length:h/P, _h:h, _w:up.cols, prof};
-  // hem 10 mm above bottom
-  const yh=h-1-Math.round(10*P); R.hem=prof[yh]; R._yh=yh;
+  // hem: walk up from the bottom to the first row that is back to (nearly) full
+  // width, so side vents, uneven hems and stray tails cannot drag the number down
+  // hem: 90th percentile of the widths in the bottom 20 % of rows.  A straight tee
+  // hem sits at the very bottom, a curved polo/shirt tail does not — taking a high
+  // percentile of the band finds the true hem line in both cases without being
+  // thrown off by vents, tails or a ragged bottom edge.
+  const lo0=Math.round(h*0.80);
+  const band=prof.slice(lo0).filter(v=>v>0).sort((a,b)=>a-b);
+  R.hem = band.length ? band[Math.min(band.length-1,Math.round(band.length*0.90))] : prof[h-2];
+  let yh=h-2, bd=1e9;
+  for(let y=lo0;y<h;y++){const d=Math.abs(prof[y]-R.hem); if(d<bd){bd=d;yh=y}}
+  R._yh = yh;
   // sleeve max
   let ymax=0;for(let i=1;i<h;i++)if(prof[i]>prof[ymax])ymax=i; R._ymax=ymax;
   // armpit: minimum width below sleeve
   const lo=Math.min(ymax+Math.round(5*P),h-2), hi=Math.max(lo+2,Math.round(h*0.80));
   let yp=lo;for(let i=lo;i<hi;i++)if(prof[i]<prof[yp])yp=i;
   R.chest=prof[yp]; R._yp=yp;
-  // shoulder (initial guess only — flagged for manual confirmation):
-  // search is restricted to rows already at shoulder scale, so the neck taper
-  // and the sleeve cap can never be picked
-  const sm=smooth(prof,31);
-  const d1=sm.map((v,i)=>i?v-sm[i-1]:0), d2=d1.map((v,i)=>i?v-d1[i-1]:0);
-  const lim=0.60*prof[ymax];
-  let s0=0; while(s0<ymax&&prof[s0]<lim) s0++;
-  s0=Math.max(s0,Math.round(h*0.02));
-  const s1=Math.max(s0+3,ymax);
-  let ys=s0; for(let i=s0;i<s1;i++) if(d2[i]<d2[ys]) ys=i;
-  R.shoulder=prof[ys]; R._ys=ys;
+  // shoulder: a spread tee's shoulder seam and sleeve top edge are nearly collinear,
+  // so there is no curvature corner to find.  Rather than emit a wild guess, seed the
+  // handle from the chest width (empirically ~0.95x on a set-in-sleeve tee) and place
+  // it near the top; the user confirms it by dragging.
+  R.shoulder = R.chest*0.95;
+  R._ys = Math.round(h*0.10);
+  R._shoulderEstimated = true;
   R.span=(y)=>rowSpan(y);
   return R;
 }
@@ -517,7 +604,12 @@ function initOverlay(){
   ST.upColor.copyTo(out,up);            // copy garment pixels only where the mask is set
   cv.imshow(BASE,out); out.delete();
   const mk=(y,label,key,col)=>{const [a,c]=R.span(y);return {y,a,c,label,key,col}};
-  HAND=[mk(R._ys,'肩寬','shoulder','#e08c1e'),
+  const shoulderHand=()=>{                 // centred on the symmetry axis, width = estimate
+    const half=R.shoulder*P/2, cx=up.cols/2;
+    return {y:R._ys,a:Math.round(cx-half),c:Math.round(cx+half),
+            label:'肩寬',key:'shoulder',col:'#e08c1e'};
+  };
+  HAND=[shoulderHand(),
         mk(R._yp,'胸寬','chest','#12a06a'),
         mk(R._yh,'腰寬','hem','#d94a4a')];
   PAD=Math.round(up.cols*0.10);
