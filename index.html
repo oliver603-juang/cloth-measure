@@ -380,7 +380,9 @@ function run(){
 
   // --- upright by mirror symmetry
   mark('up','run');
-  const {up,upColor,ang,iou}=upright(mask,roi);
+  let {up,upColor,ang,iou}=upright(mask,roi);
+  const cls=classify(up);
+  if(cls.flip){cv.flip(up,up,-1);cv.flip(upColor,upColor,-1);ang+=180}
   $('q3').textContent=ang.toFixed(1)+'°'; $('q4').textContent=iou.toFixed(3);
   mark(iou>0.75?'up':'up',iou>0.75?'ok':'err',
     iou>0.75?`角度 ${ang.toFixed(1)}°、IoU ${iou.toFixed(3)}`:`IoU ${iou.toFixed(3)} 偏低 — 袖子可能沒攤平`);
@@ -391,13 +393,9 @@ function run(){
   const R=measure(up);
   drawProfile(R);
   ST={up,upColor,R,rect,mask,ang};
-  $('vL').textContent=(R.length/10).toFixed(1);
-  $('vC').textContent=(R.chest/10).toFixed(1);
-  $('vS').textContent=(R.shoulder/10).toFixed(1);
-  $('vW').textContent=(R.hem/10).toFixed(1);
-  mark('meas','ok',`共 ${(performance.now()-t0|0)} ms`);
+  mark('meas','ok',`${R.type==='top'?'上衣':'下著'}・共 ${(performance.now()-t0|0)} ms`);
   $('rcard').style.display='';$('ncard').style.display='';
-  initOverlay(); fillDerived();
+  initOverlay(); initCards(); fillDerived();
 }
 function invMat(H){const I=new cv.Mat();cv.invert(H,I);return I}
 
@@ -409,28 +407,45 @@ function invMat(H){const I=new cv.Mat();cv.invert(H,I);return I}
    Otsu stays as a fallback; whichever produces a plausible area fraction wins.      */
 const AREA_MIN=0.08, AREA_MAX=0.75;
 
-function cleanMask(th){
-  const k9 =cv.getStructuringElement(cv.MORPH_RECT,new cv.Size(9,9));
-  const k41=cv.getStructuringElement(cv.MORPH_RECT,new cv.Size(41,41));
-  cv.morphologyEx(th,th,cv.MORPH_OPEN,k9);
-  cv.morphologyEx(th,th,cv.MORPH_CLOSE,k41);
-  k9.delete();k41.delete();
+function largestBlob(th){
   const lab=new cv.Mat(),stats=new cv.Mat(),cen=new cv.Mat();
   const n=cv.connectedComponentsWithStats(th,lab,stats,cen);
   let bi=-1,ba=0;
   for(let i=1;i<n;i++){const a=stats.intPtr(i,4)[0];if(a>ba){ba=a;bi=i}}
   let out=null;
   if(bi>=0){
-    const lab8=new cv.Mat(); lab.convertTo(lab8,cv.CV_8U);
-    const lo=new cv.Mat(lab8.rows,lab8.cols,cv.CV_8U,new cv.Scalar(bi));
-    out=new cv.Mat(); cv.inRange(lab8,lo,lo,out); lab8.delete();lo.delete();
-    const cts=new cv.MatVector(),hi=new cv.Mat();
-    cv.findContours(out,cts,hi,cv.RETR_EXTERNAL,cv.CHAIN_APPROX_NONE);
-    out.setTo(new cv.Scalar(0)); cv.drawContours(out,cts,-1,new cv.Scalar(255),-1);
-    cts.delete();hi.delete();
+    // compare on the 32-bit label image directly: a noisy mask can have well over 255
+    // components, and converting the labels to 8U would wrap them round
+    const cst=new cv.Mat(lab.rows,lab.cols,cv.CV_32S,new cv.Scalar(bi));
+    out=new cv.Mat(); cv.compare(lab,cst,out,cv.CMP_EQ); cst.delete();
   }
   lab.delete();stats.delete();cen.delete();
-  return out;
+  return {blob:out,area:ba};
+}
+function fillAndSmooth(m){
+  const cts=new cv.MatVector(),hi=new cv.Mat();
+  cv.findContours(m,cts,hi,cv.RETR_EXTERNAL,cv.CHAIN_APPROX_NONE);
+  m.setTo(new cv.Scalar(0)); cv.drawContours(m,cts,-1,new cv.Scalar(255),-1);
+  cts.delete();hi.delete();
+  const ks=cv.getStructuringElement(cv.MORPH_RECT,new cv.Size(9,9));
+  cv.morphologyEx(m,m,cv.MORPH_CLOSE,ks); ks.delete();
+  return m;
+}
+/* A big closing would merge a striped garment's bands back together, but it would also
+   bridge the crotch of a pair of shorts.  So close gently first, and only fall back to
+   the heavy kernel when the largest blob fails to account for most of the thresholded
+   pixels — i.e. when the mask really did shatter.                                    */
+function cleanMask(th){
+  const k9=cv.getStructuringElement(cv.MORPH_RECT,new cv.Size(9,9));
+  cv.morphologyEx(th,th,cv.MORPH_OPEN,k9); k9.delete();
+  const total=cv.countNonZero(th);
+  const a=largestBlob(th);
+  if(a.blob && total>0 && a.area/total>=0.85) return fillAndSmooth(a.blob);
+  if(a.blob) a.blob.delete();
+  const k41=cv.getStructuringElement(cv.MORPH_RECT,new cv.Size(41,41));
+  cv.morphologyEx(th,th,cv.MORPH_CLOSE,k41); k41.delete();
+  const b=largestBlob(th);
+  return b.blob ? fillAndSmooth(b.blob) : null;
 }
 function inv3(c){                      // inverse of a symmetric 3x3, c = [c00,c01,c02,c11,c12,c22]
   const [a,b,cc,d,e,f]=c;
@@ -495,13 +510,43 @@ function segment(roi){
 }
 
 /* ---------- upright ---------- */
-/* row-wise pixel count, done natively (Mat.data row stride is unreliable in opencv.js) */
+/* Row profiles, computed natively (Mat.data row stride is unreliable in opencv.js).
+   count = filled pixels in the row, span = last-first+1.  Their difference is the
+   size of any hole in that row, which is how the crotch of a bottom garment and the
+   side vents of a polo are detected without extracting runs pixel by pixel.        */
 function widths(m){const r=new cv.Mat();
  cv.reduce(m,r,1,cv.REDUCE_SUM,cv.CV_32S);
  const w=[];for(let y=0;y<m.rows;y++)w.push(r.intPtr(y,0)[0]/255);
  r.delete();return w}
+function spans(m){
+  const cols=m.cols, rows=m.rows, BIG=1e7;
+  const idxRow=cv.matFromArray(1,cols,cv.CV_32F,Array.from({length:cols},(_,i)=>i));
+  const idx=new cv.Mat(); cv.repeat(idxRow,rows,1,idx); idxRow.delete();
+  const mf=new cv.Mat(); m.convertTo(mf,cv.CV_32F,1/255,0);
+  const inv=new cv.Mat(); mf.convertTo(inv,cv.CV_32F,-1,1);          // 1 - mask
+  const A=new cv.Mat(); cv.multiply(idx,mf,A); cv.addWeighted(A,1,inv,BIG,0,A);
+  const B=new cv.Mat(); cv.multiply(idx,mf,B); cv.addWeighted(B,1,inv,-1,0,B);
+  const mn=new cv.Mat(),mx=new cv.Mat();
+  cv.reduce(A,mn,1,cv.REDUCE_MIN,cv.CV_32F);
+  cv.reduce(B,mx,1,cv.REDUCE_MAX,cv.CV_32F);
+  const out=[];
+  for(let y=0;y<rows;y++){
+    const a=mn.floatPtr(y,0)[0], b=mx.floatPtr(y,0)[0];
+    out.push(b<0?0:b-a+1);
+  }
+  idx.delete();mf.delete();inv.delete();A.delete();B.delete();mn.delete();mx.delete();
+  return out;
+}
 function rowSpanOf(m,y){let a=-1,b=-1;
  for(let x=0;x<m.cols;x++) if(m.ucharPtr(y,x)[0]){ if(a<0)a=x; b=x }
+ return [a,b]}
+function rowRunOf(m,y){            // first contiguous run in the row (one trouser leg)
+ let a=-1,b=-1,gap=0;
+ for(let x=0;x<m.cols;x++){
+   const on=m.ucharPtr(y,x)[0];
+   if(on){ if(a<0)a=x; b=x; gap=0 }
+   else if(a>=0){ if(++gap>Math.round(3*P)) break }
+ }
  return [a,b]}
 
 function iouAt(small,C,a){
@@ -540,45 +585,88 @@ function upright(mask,colour){
   const bb=cv.boundingRect(R);
   const crop=R.roi(bb).clone(); R.delete();
   const cropC=CR.roi(bb).clone(); CR.delete();
-  const w=widths(crop); let mi=0;for(let i=1;i<w.length;i++)if(w[i]>w[mi])mi=i;
-  let ang=bA;
-  if(mi>w.length*0.5){cv.flip(crop,crop,-1);cv.flip(cropC,cropC,-1);ang+=180}
-  return {up:crop,upColor:cropC,ang,iou:bV};
+  return {up:crop,upColor:cropC,ang:bA,iou:bV};
 }
 
 /* ---------- measurement ---------- */
 function smooth(a,k){const o=[],h=k>>1;for(let i=0;i<a.length;i++){let s=0,n=0;
  for(let j=Math.max(0,i-h);j<=Math.min(a.length-1,i+h);j++){s+=a[j];n++}o.push(s/n)}return o}
+function pctl(arr,q){const a=arr.filter(v=>v>0).sort((x,y)=>x-y);
+ return a.length?a[Math.min(a.length-1,Math.round(a.length*q))]:0}
+
+/* A top has only a shallow neck notch; a bottom garment is split by the crotch over a
+   large part of its height.  Measuring how deep the split reaches from each end both
+   classifies the garment and tells us which way up it is.                          */
+function notchDepth(two,fromEnd){
+  const h=two.length, t=fromEnd?[...two].reverse():two;
+  let best=0,hit=0;
+  for(let y=1;y<h;y++){ if(t[y])hit++; if(hit/(y+1)>=0.80) best=y; }
+  return best/h;
+}
+function classify(up){
+  const count=widths(up).map(v=>v/P), span=spans(up).map(v=>v/P);
+  const two=span.map((s,i)=>s-count[i] > 4);          // a hole of 4 mm or more
+  const dTop=notchDepth(two,false), dBot=notchDepth(two,true);
+  const isBottom=Math.max(dTop,dBot)>0.18;
+  let flip;
+  if(isBottom) flip = dTop>dBot;                       // legs must end up at the bottom
+  else { let mi=0;for(let i=1;i<span.length;i++)if(span[i]>span[mi])mi=i;
+         flip = mi>span.length*0.5; }                  // widest part (sleeves) goes on top
+  return {isBottom,flip,dTop,dBot};
+}
+
+const SPEC={
+  top:   {cards:[['vL','衣長'],['vC','胸寬'],['vS','肩寬'],['vW','下擺']],
+          manual:['shoulder']},
+  bottom:{cards:[['vL','褲長'],['vC','腰寬'],['vS','臀寬'],['vW','褲口']],
+          manual:[]}
+};
+
 function measure(up){
-  const h=up.rows, w=widths(up), prof=w.map(v=>v/P);
-  const rowSpan=y=>rowSpanOf(up,y);
-  const R={length:h/P, _h:h, _w:up.cols, prof};
-  // hem: walk up from the bottom to the first row that is back to (nearly) full
-  // width, so side vents, uneven hems and stray tails cannot drag the number down
-  // hem: 90th percentile of the widths in the bottom 20 % of rows.  A straight tee
-  // hem sits at the very bottom, a curved polo/shirt tail does not — taking a high
-  // percentile of the band finds the true hem line in both cases without being
-  // thrown off by vents, tails or a ragged bottom edge.
-  const lo0=Math.round(h*0.80);
-  const band=prof.slice(lo0).filter(v=>v>0).sort((a,b)=>a-b);
-  R.hem = band.length ? band[Math.min(band.length-1,Math.round(band.length*0.90))] : prof[h-2];
-  let yh=h-2, bd=1e9;
-  for(let y=lo0;y<h;y++){const d=Math.abs(prof[y]-R.hem); if(d<bd){bd=d;yh=y}}
-  R._yh = yh;
-  // sleeve max
-  let ymax=0;for(let i=1;i<h;i++)if(prof[i]>prof[ymax])ymax=i; R._ymax=ymax;
-  // armpit: minimum width below sleeve
-  const lo=Math.min(ymax+Math.round(5*P),h-2), hi=Math.max(lo+2,Math.round(h*0.80));
-  let yp=lo;for(let i=lo;i<hi;i++)if(prof[i]<prof[yp])yp=i;
-  R.chest=prof[yp]; R._yp=yp;
-  // shoulder: a spread tee's shoulder seam and sleeve top edge are nearly collinear,
-  // so there is no curvature corner to find.  Rather than emit a wild guess, seed the
-  // handle from the chest width (empirically ~0.95x on a set-in-sleeve tee) and place
-  // it near the top; the user confirms it by dragging.
-  R.shoulder = R.chest*0.95;
-  R._ys = Math.round(h*0.10);
-  R._shoulderEstimated = true;
-  R.span=(y)=>rowSpan(y);
+  const h=up.rows;
+  const count=widths(up).map(v=>v/P), span=spans(up).map(v=>v/P);   // px -> mm
+  const two=span.map((s,i)=>s-count[i] > 4);                        // hole of 4 mm or more
+  const R={_h:h,_w:up.cols,prof:span,count,two,length:h/P};
+  const {isBottom}=classify(up);
+  R.type=isBottom?'bottom':'top';
+  let ymax=0;for(let i=1;i<h;i++)if(span[i]>span[ymax])ymax=i; R._ymax=ymax;
+
+  if(!isBottom){
+    // chest: narrowest point below the sleeves
+    const lo=Math.min(ymax+Math.round(5*P),h-2), hi=Math.max(lo+2,Math.round(h*0.80));
+    let yp=lo;for(let i=lo;i<hi;i++)if(span[i]<span[yp])yp=i;
+    R.chest=span[yp]; R._yp=yp;
+    // hem: 90th percentile of the bottom fifth (straight hems sit at the very bottom,
+    // curved shirt tails do not)
+    const lo0=Math.round(h*0.80);
+    R.hem=pctl(span.slice(lo0),0.90);
+    let yh=h-2,bd=1e9;
+    for(let y=lo0;y<h;y++){const d=Math.abs(span[y]-R.hem);if(d<bd){bd=d;yh=y}}
+    R._yh=yh;
+    R.shoulder=R.chest*0.95; R._ys=Math.round(h*0.10);
+    R.keys={length:'length',a:'chest',b:'shoulder',c:'hem'};
+  }else{
+    // waistband: skip the belt loops / tab that stick up past the top edge
+    const wLo=Math.round(h*0.03), wHi=Math.round(h*0.12);
+    R.waist=pctl(span.slice(wLo,wHi),0.5);
+    let yw=wLo,bd=1e9;
+    for(let y=wLo;y<wHi;y++){const d=Math.abs(span[y]-R.waist);if(d<bd){bd=d;yw=y}}
+    R._yw=yw;
+    R._top=0; while(R._top<h && span[R._top]<0.5*R.waist) R._top++;
+    let yc=h-1; for(let y=0;y<h-Math.round(2*P);y++){
+      let all=true;for(let k=0;k<Math.round(2*P);k++) if(!two[y+k]){all=false;break}
+      if(all){yc=y;break} }
+    R._yc=yc;
+    let yhip=R._top,best=0;
+    for(let y=R._top;y<yc;y++) if(span[y]>best){best=span[y];yhip=y}
+    R.hip=best; R._yhip=yhip;
+    const oLo=Math.round(h*0.90);
+    R.opening=pctl(count.slice(oLo).map(v=>v/2),0.5);   // symmetric legs -> half the pixels
+    R._yo=Math.round(h*0.95);
+    R.length=(h-R._top)/P;
+    R.keys={length:'length',a:'waist',b:'hip',c:'opening'};
+  }
+  R.span=(y)=>rowSpanOf(up,y);
   return R;
 }
 function drawProfile(R){
@@ -606,18 +694,31 @@ function initOverlay(){
   cv.imshow(BASE,out); out.delete();
 
   const mk=(y,label,key,col)=>{const [a,c]=R.span(y);return {y,a,c,label,key,col,type:'h'}};
-  const shoulderHand=()=>{                 // centred on the symmetry axis, width = estimate
-    const half=R.shoulder*P/2, cx=up.cols/2;
-    return {y:R._ys,a:Math.round(cx-half),c:Math.round(cx+half),
-            label:'肩寬',key:'shoulder',col:'#e08c1e',type:'h'};
+  const centred=(y,width,label,key,col)=>{
+    const half=width*P/2, cx=up.cols/2;
+    return {y,a:Math.round(cx-half),c:Math.round(cx+half),label,key,col,type:'h'};
   };
-  HAND=[shoulderHand(),
-        mk(R._yp,'胸寬','chest','#12a06a'),
-        mk(R._yh,'腰寬','hem','#d94a4a')];
+  if(R.type==='top'){
+    HAND=[centred(R._ys,R.shoulder,'肩寬','shoulder','#e08c1e'),
+          mk(R._yp,'胸寬','chest','#12a06a'),
+          mk(R._yh,'下擺','hem','#d94a4a')];
+  }else{
+    const [oa,ob]=rowRunOf(up,R._yo);
+    HAND=[mk(R._yw,'腰寬','waist','#e08c1e'),
+          mk(R._yhip,'臀寬','hip','#12a06a'),
+          {y:R._yo,a:oa,c:ob,label:'褲口',key:'opening',col:'#d94a4a',type:'h'}];
+  }
+  // card captions follow the garment type
+  SPEC[R.type].cards.forEach(([id,name])=>{
+    $(id).closest('.m').querySelector('.k').textContent=name;
+  });
+  $('f_height').previousElementSibling && ($('f_height').previousElementSibling.textContent =
+    R.type==='top' ? '適穿身高' : '適穿腰圍');
 
   PAD=Math.round(up.cols*0.10);
   const ov=$('ov');OVW=ov.width=up.cols+2*PAD;OVH=ov.height=up.rows+2*PAD;
-  LEN={x:Math.round(-PAD*0.55),y1:0,y2:up.rows-1,label:'衣長',key:'length',col:'#2f7fd6',type:'v'};
+  LEN={x:Math.round(-PAD*0.55),y1:(R.type==='bottom'?R._top:0),y2:up.rows-1,
+       label:R.type==='bottom'?'褲長':'衣長',key:'length',col:'#2f7fd6',type:'v'};
 
   SCENE=document.createElement('canvas');SCENE.width=OVW;SCENE.height=OVH;
   LOUPE={on:false,x:0,y:0};
@@ -656,8 +757,20 @@ function measured(key){
   const h=HAND.find(x=>x.key===key);
   return h?Math.abs(h.c-h.a)/P:0;
 }
+function cardMap(){
+  return ST.R.type==='top' ? {length:'vL',chest:'vC',shoulder:'vS',hem:'vW'}
+                           : {length:'vL',waist:'vC',hip:'vS',opening:'vW'};
+}
+function initCards(){
+  const map=cardMap(), man=SPEC[ST.R.type].manual;
+  for(const k in map){
+    $(map[k]).textContent=(measured(k)/10).toFixed(1);
+    $(map[k]).closest('.m').className='m '+(man.includes(k)?'man':'auto');
+  }
+  buildTitle();
+}
 function recalc(){
-  const map={shoulder:'vS',chest:'vC',hem:'vW',length:'vL'};
+  const map=cardMap();
   for(const k in map){
     $(map[k]).textContent=(measured(k)/10).toFixed(1);
     $(map[k]).closest('.m').className='m man';
@@ -697,7 +810,7 @@ function paintScene(){
     [y1,y2].forEach(py=>{x.beginPath();x.moveTo(lx-R,py);x.lineTo(lx+R,py);x.stroke()})});
   x.fillStyle=LEN.col; [y1,y2].forEach(py=>knob(lx,py));
   x.save();x.translate(lx+FS*1.0,(y1+y2)/2);x.rotate(-Math.PI/2);
-  label(`衣長 ${(measured('length')/10).toFixed(1)} cm`,0,0,LEN.col);x.restore();
+  label(`${LEN.label} ${(measured('length')/10).toFixed(1)} cm`,0,0,LEN.col);x.restore();
   x.textAlign='right';x.font=`${FS*0.6}px -apple-system,system-ui,sans-serif`;
   x.fillStyle='rgba(0,0,0,.28)';
   x.fillText('ArUco 校正量測',OVW-FS*0.5,OVH-FS*0.45);
@@ -773,12 +886,22 @@ function meanColour(){
   const m=cv.mean(ST.upColor,ST.up);          // RGBA mean inside the mask
   return colourName(m[0],m[1],m[2]);
 }
-const SIZES=[[44,'S','160-170'],[47.5,'M','165-175'],[51.5,'L','170-180'],
-             [55,'XL','175-185'],[999,'2XL','180-190']];
+const SIZES_TOP=[[44,'S','160-170'],[47.5,'M','165-175'],[51.5,'L','170-180'],
+                 [55,'XL','175-185'],[999,'2XL','180-190']];
+const SIZES_BOT=[[36,'S','66-72'],[39,'M','72-78'],[42,'L','78-84'],
+                 [45,'XL','84-90'],[999,'2XL','90-96']];
 function derive(){
-  const R=ST.R;
-  const chest=measured('chest')/10, len=measured('length')/10, span=R.prof[R._ymax];
-  const sz=SIZES.find(s=>chest<s[0]);
+  const R=ST.R, len=measured('length')/10;
+  if(R.type==='bottom'){
+    const waist=measured('waist')/10, hip=measured('hip')/10;
+    const sz=SIZES_BOT.find(s=>waist<s[0]);
+    const r=hip/Math.max(waist,1);
+    const fit = r<1.12?'合身':r<1.28?'標準':'寬鬆';
+    const cat = len<58?'短褲':len<85?'七分褲':'長褲';
+    return {size:sz[1],height:sz[2],fit,cat,colour:meanColour()};
+  }
+  const chest=measured('chest')/10, span=R.prof[R._ymax];
+  const sz=SIZES_TOP.find(s=>chest<s[0]);
   const ratio=chest*2/len;
   const fit = ratio<1.45?'合身':ratio<1.62?'標準':ratio<1.78?'寬鬆':'Oversize';
   const sr = span/(chest*10);
@@ -889,13 +1012,16 @@ $('ai').onclick=async()=>{
   const prompt=`你是二手服飾上架助理。看圖判斷這件衣服的屬性，回傳 JSON。
 
 已知的量測結果（請當作事實，不要推翻）：
-- 衣長 ${$('vL').textContent} cm、胸寬(腋下) ${$('vC').textContent} cm、肩寬 ${$('vS').textContent} cm、下擺 ${$('vW').textContent} cm
+${ST.R.type==='top'
+  ? `- 衣長 ${$('vL').textContent} cm、胸寬(腋下) ${$('vC').textContent} cm、肩寬 ${$('vS').textContent} cm、下擺 ${$('vW').textContent} cm`
+  : `- 褲長 ${$('vL').textContent} cm、腰寬(平量) ${$('vC').textContent} cm、臀寬 ${$('vS').textContent} cm、褲口 ${$('vW').textContent} cm`}
+- 這是${ST.R.type==='top'?'上半身衣物':'下半身衣物（褲子或裙子）'}
 - 推導尺碼 ${d.size}、版型 ${d.fit}
 
 各欄位要求：
 - brand：品牌英文原名（如 adidas、UNIQLO）。看不出來就回空字串，不要猜。
 - gender：男款 / 女款 / 中性 / 童裝，擇一。
-- category：具體品類，如 短袖T恤、長袖上衣、連帽外套、襯衫、洋裝。
+- category：具體品類，如 短袖T恤、長袖上衣、連帽外套、襯衫、短褲、休閒長褲、牛仔褲、運動褲。
 - pattern：圖樣特徵，簡短 6 字內，如 素色、印字LOGO、滿版印花、橫條紋。
 - style：風格或適合場合，簡短 6 字內，如 運動休閒、日系復古、正式上班、街頭潮流。
 - material：材質，看得到洗標才填（如 聚酯纖維、純棉），否則空字串。
