@@ -596,50 +596,80 @@ function drawProfile(R){
 }
 
 /* ---------- interactive overlay ---------- */
-let HAND=[],drag=-1,OVW=0,OVH=0,BASE=null,PAD=0;
+let HAND=[],LEN=null,drag=null,OVW=0,OVH=0,BASE=null,PAD=0,SCENE=null,LOUPE=null;
+
 function initOverlay(){
   const {up,R}=ST;
   BASE=document.createElement('canvas');
   const out=new cv.Mat(up.rows,up.cols,cv.CV_8UC4,new cv.Scalar(255,255,255,255));
   ST.upColor.copyTo(out,up);            // copy garment pixels only where the mask is set
   cv.imshow(BASE,out); out.delete();
-  const mk=(y,label,key,col)=>{const [a,c]=R.span(y);return {y,a,c,label,key,col}};
+
+  const mk=(y,label,key,col)=>{const [a,c]=R.span(y);return {y,a,c,label,key,col,type:'h'}};
   const shoulderHand=()=>{                 // centred on the symmetry axis, width = estimate
     const half=R.shoulder*P/2, cx=up.cols/2;
     return {y:R._ys,a:Math.round(cx-half),c:Math.round(cx+half),
-            label:'肩寬',key:'shoulder',col:'#e08c1e'};
+            label:'肩寬',key:'shoulder',col:'#e08c1e',type:'h'};
   };
   HAND=[shoulderHand(),
         mk(R._yp,'胸寬','chest','#12a06a'),
         mk(R._yh,'腰寬','hem','#d94a4a')];
+
   PAD=Math.round(up.cols*0.10);
   const ov=$('ov');OVW=ov.width=up.cols+2*PAD;OVH=ov.height=up.rows+2*PAD;
+  LEN={x:Math.round(-PAD*0.55),y1:0,y2:up.rows-1,label:'衣長',key:'length',col:'#2f7fd6',type:'v'};
+
+  SCENE=document.createElement('canvas');SCENE.width=OVW;SCENE.height=OVH;
+  LOUPE={on:false,x:0,y:0};
   paint();
+
   const pos=e=>{const r=ov.getBoundingClientRect();const t=e.touches?e.touches[0]:e;
     return [(t.clientX-r.left)/r.width*OVW-PAD,(t.clientY-r.top)/r.height*OVH-PAD]};
-  const down=e=>{const [x,y]=pos(e);let bd=1e9;drag=-1;
-    HAND.forEach((h,i)=>{[[h.a,h.y],[h.c,h.y]].forEach((p,j)=>{
-      const d=Math.hypot(p[0]-x,p[1]-y);if(d<bd&&d<60){bd=d;drag=i*2+j}})});
-    if(drag>=0)e.preventDefault()};
-  const move=e=>{if(drag<0)return;e.preventDefault();const [x,y]=pos(e);
-    const h=HAND[drag>>1];h.y=Math.max(0,Math.min(BASE.height-1,Math.round(y)));
-    if(drag&1)h.c=Math.round(x);else h.a=Math.round(x);
+  const points=()=>{
+    const out=[];
+    HAND.forEach((h,i)=>{out.push({m:h,i,p:[h.a,h.y],which:0});out.push({m:h,i,p:[h.c,h.y],which:1})});
+    out.push({m:LEN,p:[LEN.x,LEN.y1],which:0});
+    out.push({m:LEN,p:[LEN.x,LEN.y2],which:1});
+    return out;
+  };
+  const down=e=>{const [x,y]=pos(e);let bd=1e9;drag=null;
+    points().forEach(q=>{const d=Math.hypot(q.p[0]-x,q.p[1]-y);
+      if(d<bd&&d<OVW*0.09){bd=d;drag=q}});
+    if(drag){e.preventDefault();LOUPE={on:true,x,y};paint()}};
+  const move=e=>{if(!drag)return;e.preventDefault();const [x,y]=pos(e);
+    const m=drag.m;
+    if(m.type==='h'){
+      m.y=Math.max(0,Math.min(BASE.height-1,Math.round(y)));
+      if(drag.which)m.c=Math.round(x); else m.a=Math.round(x);
+    }else{
+      const v=Math.max(-PAD,Math.min(BASE.height-1+PAD,Math.round(y)));
+      if(drag.which)m.y2=v; else m.y1=v;
+    }
+    LOUPE={on:true,x,y};
     recalc();paint()};
-  const upE=()=>drag=-1;
+  const upE=()=>{if(drag){drag=null;LOUPE.on=false;paint()}};
   ov.onmousedown=down;ov.onmousemove=move;window.onmouseup=upE;
-  ov.ontouchstart=down;ov.ontouchmove=move;ov.ontouchend=upE;
+  ov.ontouchstart=down;ov.ontouchmove=move;ov.ontouchend=upE;ov.ontouchcancel=upE;
+}
+function measured(key){
+  if(key==='length') return Math.abs(LEN.y2-LEN.y1)/P;
+  const h=HAND.find(x=>x.key===key);
+  return h?Math.abs(h.c-h.a)/P:0;
 }
 function recalc(){
-  const map={shoulder:'vS',chest:'vC',hem:'vW'};
-  HAND.forEach(h=>{const mm=Math.abs(h.c-h.a)/P;$(map[h.key]).textContent=(mm/10).toFixed(1);
-    $(map[h.key]).closest('.m').className='m man'});
-  $('vL').textContent=(ST.R.length/10).toFixed(1);
+  const map={shoulder:'vS',chest:'vC',hem:'vW',length:'vL'};
+  for(const k in map){
+    $(map[k]).textContent=(measured(k)/10).toFixed(1);
+    $(map[k]).closest('.m').className='m man';
+  }
   buildTitle();
 }
-function paint(){
-  const x=$('ov').getContext('2d');
+
+/* ---------- painting ---------- */
+function paintScene(){
+  const x=SCENE.getContext('2d');
   x.fillStyle='#fff';x.fillRect(0,0,OVW,OVH);x.drawImage(BASE,PAD,PAD);
-  const U=OVW/1000;                                   // scale unit, keeps output resolution-independent
+  const U=OVW/1000;
   const LW=Math.max(3,7*U), R=Math.max(7,14*U), FS=Math.max(16,34*U);
   x.font=`600 ${FS}px -apple-system,"Noto Sans TC",system-ui,sans-serif`;
   x.textBaseline='middle';
@@ -650,28 +680,62 @@ function paint(){
     x.fillStyle=col;x.fill();
     x.fillStyle='#fff';x.fillText(t,cx,cy+FS*0.05);
   };
+  const knob=(px,py)=>{x.beginPath();x.arc(px,py,R,0,7);x.fill();
+    x.lineWidth=LW*0.6;x.strokeStyle='#fff';x.stroke()};
   HAND.forEach(h=>{
     const a=h.a+PAD,c=h.c+PAD,y=h.y+PAD;
     x.lineWidth=LW;x.strokeStyle=h.col;x.fillStyle=h.col;
     halo(()=>{x.beginPath();x.moveTo(a,y);x.lineTo(c,y);x.stroke();
       [a,c].forEach(px=>{x.beginPath();x.moveTo(px,y-R);x.lineTo(px,y+R);x.stroke()})});
-    x.fillStyle=h.col;
-    [a,c].forEach(px=>{x.beginPath();x.arc(px,y,R,0,7);
-      x.fill();x.lineWidth=LW*0.6;x.strokeStyle='#fff';x.stroke()});
+    x.fillStyle=h.col; [a,c].forEach(px=>knob(px,y));
     label(`${h.label} ${(Math.abs(h.c-h.a)/P/10).toFixed(1)} cm`,(a+c)/2,y,h.col);
   });
-  // length arrow down the left margin
-  const lx=PAD*0.45, col='#2f7fd6', y0=PAD, y1=PAD+BASE.height;
-  x.lineWidth=LW;x.strokeStyle=col;x.fillStyle=col;
-  halo(()=>{x.beginPath();x.moveTo(lx,y0);x.lineTo(lx,y1);x.stroke();
-    [y0,y1].forEach(py=>{x.beginPath();x.moveTo(lx-R,py);x.lineTo(lx+R,py);x.stroke()})});
-  x.save();x.translate(lx+FS*1.0,(y0+y1)/2);x.rotate(-Math.PI/2);
-  label(`衣長 ${(ST.R.length/10).toFixed(1)} cm`,0,0,col);x.restore();
-  // watermark
+  // length, now draggable along the left margin
+  const lx=LEN.x+PAD, y1=LEN.y1+PAD, y2=LEN.y2+PAD;
+  x.lineWidth=LW;x.strokeStyle=LEN.col;x.fillStyle=LEN.col;
+  halo(()=>{x.beginPath();x.moveTo(lx,y1);x.lineTo(lx,y2);x.stroke();
+    [y1,y2].forEach(py=>{x.beginPath();x.moveTo(lx-R,py);x.lineTo(lx+R,py);x.stroke()})});
+  x.fillStyle=LEN.col; [y1,y2].forEach(py=>knob(lx,py));
+  x.save();x.translate(lx+FS*1.0,(y1+y2)/2);x.rotate(-Math.PI/2);
+  label(`衣長 ${(measured('length')/10).toFixed(1)} cm`,0,0,LEN.col);x.restore();
   x.textAlign='right';x.font=`${FS*0.6}px -apple-system,system-ui,sans-serif`;
   x.fillStyle='rgba(0,0,0,.28)';
   x.fillText('ArUco 校正量測',OVW-FS*0.5,OVH-FS*0.45);
 }
+function paint(){
+  paintScene();
+  const x=$('ov').getContext('2d');
+  x.clearRect(0,0,OVW,OVH);
+  x.drawImage(SCENE,0,0);
+  if(LOUPE&&LOUPE.on) drawLoupe(x);
+}
+/* magnifier: the fingertip covers the very point being placed, so mirror that area
+   into a fixed corner bubble, flipping sides if the finger gets near it            */
+function drawLoupe(x){
+  const cx=LOUPE.x+PAD, cy=LOUPE.y+PAD;
+  const R=OVW*0.135, Z=3.2, M=R*0.28;
+  const left = cx > OVW*0.5;
+  const bx = left ? R+M : OVW-R-M, by = R+M;
+  x.save();
+  x.beginPath();x.arc(bx,by,R,0,7);
+  x.fillStyle='#fff';x.fill();
+  x.clip();
+  x.drawImage(SCENE, cx-R/Z, cy-R/Z, 2*R/Z, 2*R/Z, bx-R, by-R, 2*R, 2*R);
+  x.restore();
+  // crosshair + rim
+  x.save();
+  x.strokeStyle='rgba(0,0,0,.45)';x.lineWidth=Math.max(2,OVW/500);
+  const g=R*0.16;
+  x.beginPath();
+  x.moveTo(bx-R*0.45,by);x.lineTo(bx-g,by); x.moveTo(bx+g,by);x.lineTo(bx+R*0.45,by);
+  x.moveTo(bx,by-R*0.45);x.lineTo(bx,by-g); x.moveTo(bx,by+g);x.lineTo(bx,by+R*0.45);
+  x.stroke();
+  x.beginPath();x.arc(bx,by,R,0,7);
+  x.strokeStyle='rgba(255,255,255,.95)';x.lineWidth=Math.max(4,OVW/150);x.stroke();
+  x.strokeStyle='rgba(0,0,0,.30)';x.lineWidth=Math.max(2,OVW/400);x.stroke();
+  x.restore();
+}
+
 function saveCanvas(cv2,name){
   const a=document.createElement('a');
   a.download=name; a.href=cv2.toDataURL('image/jpeg',0.92); a.click();
@@ -712,8 +776,8 @@ function meanColour(){
 const SIZES=[[44,'S','160-170'],[47.5,'M','165-175'],[51.5,'L','170-180'],
              [55,'XL','175-185'],[999,'2XL','180-190']];
 function derive(){
-  const R=ST.R, chest=(HAND.find(h=>h.key==='chest')?Math.abs(HAND[1].c-HAND[1].a)/P:R.chest)/10;
-  const len=R.length/10, span=R.prof[R._ymax];
+  const R=ST.R;
+  const chest=measured('chest')/10, len=measured('length')/10, span=R.prof[R._ymax];
   const sz=SIZES.find(s=>chest<s[0]);
   const ratio=chest*2/len;
   const fit = ratio<1.45?'合身':ratio<1.62?'標準':ratio<1.78?'寬鬆':'Oversize';
@@ -825,7 +889,7 @@ $('ai').onclick=async()=>{
   const prompt=`你是二手服飾上架助理。看圖判斷這件衣服的屬性，回傳 JSON。
 
 已知的量測結果（請當作事實，不要推翻）：
-- 衣長 ${(ST.R.length/10).toFixed(1)} cm、胸寬(腋下) ${$('vC').textContent} cm、肩寬 ${$('vS').textContent} cm、下擺 ${$('vW').textContent} cm
+- 衣長 ${$('vL').textContent} cm、胸寬(腋下) ${$('vC').textContent} cm、肩寬 ${$('vS').textContent} cm、下擺 ${$('vW').textContent} cm
 - 推導尺碼 ${d.size}、版型 ${d.fit}
 
 各欄位要求：
