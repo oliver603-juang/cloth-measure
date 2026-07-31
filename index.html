@@ -8,7 +8,25 @@
 :root{--bg:#0f1115;--panel:#181b22;--line:#2a2f3a;--fg:#e6e8ec;--dim:#9aa3b2;--acc:#4ea1ff;--ok:#3ddc97;--warn:#ffb454;--err:#ff6b6b}
 *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
 body{margin:0;background:var(--bg);color:var(--fg);font:15px/1.5 -apple-system,"Noto Sans TC",system-ui,sans-serif}
-header{padding:14px 16px;border-bottom:1px solid var(--line);position:sticky;top:0;background:var(--bg);z-index:9}
+header{padding:14px 16px;border-bottom:1px solid var(--line);position:sticky;top:0;background:var(--bg);z-index:9;display:flex;align-items:center;gap:10px}
+header .grow{flex:1;min-width:0}
+#gear{width:38px;height:38px;flex:0 0 38px;border-radius:50%;background:#242a35;border:1px solid var(--line);
+ display:grid;place-items:center;font-size:17px;padding:0;color:var(--fg)}
+.mask{position:fixed;inset:0;background:rgba(0,0,0,.6);display:none;place-items:center;z-index:50;padding:18px}
+.mask.on{display:grid}
+.modal{background:#1b202a;border:1px solid var(--line);border-radius:16px;padding:18px;width:100%;max-width:420px}
+.modal h3{margin:0 0 12px;font-size:16px;display:flex;align-items:center;gap:8px}
+.modal input,.modal select{width:100%;background:#20252f;color:var(--fg);border:1px solid var(--line);
+ border-radius:9px;padding:11px;font-size:15px;margin-bottom:10px}
+.modal .foot{display:flex;gap:8px}
+.modal .foot button{flex:1}
+.fields{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.fields label{font-size:11px;color:var(--dim);letter-spacing:.4px}
+.fields input{width:100%;background:#20252f;color:var(--fg);border:1px solid var(--line);
+ border-radius:8px;padding:9px;font-size:14px;margin-top:3px}
+.fields .wide{grid-column:1 / -1}
+.title-box{background:#20252f;border:1px solid #2f5b8a;border-radius:10px;padding:12px;
+ font-size:15px;line-height:1.6;word-break:break-all;margin-top:10px}
 h1{margin:0;font-size:16px;font-weight:600}
 .sub{color:var(--dim);font-size:12px;margin-top:2px}
 .wrap{padding:14px;max-width:900px;margin:0 auto}
@@ -40,8 +58,28 @@ td{padding:4px 0;border-bottom:1px solid var(--line)}td:last-child{text-align:ri
 </style>
 </head>
 <body>
-<header><h1>衣物尺寸量測 — 演算法驗證頁</h1>
-<div class="sub">ArUco 校正 → Otsu 分割 → 對稱軸轉正 → 特徵點量測</div></header>
+<header>
+  <div class="grow"><h1>衣物尺寸量測</h1>
+  <div class="sub">ArUco 校正 → 分割去背 → 尺寸量測 → AI 命名</div></div>
+  <button id="gear" title="設定 AI 金鑰">⚙</button>
+</header>
+
+<div class="mask" id="kmask"><div class="modal">
+  <h3><span style="color:var(--acc)">⚙</span> 設定 AI 金鑰</h3>
+  <input id="kkey" type="password" placeholder="貼上你的 Gemini API Key" autocomplete="off">
+  <select id="kmodel">
+    <option value="gemini-3.6-flash">gemini-3.6-flash（建議・正式版）</option>
+    <option value="gemini-3.5-flash-lite">gemini-3.5-flash-lite（最省）</option>
+    <option value="gemini-2.5-flash">gemini-2.5-flash</option>
+  </select>
+  <div class="foot">
+    <button class="sec" id="kget">取得 Key</button>
+    <button id="ksave">儲存</button>
+  </div>
+  <div class="hint" style="margin-top:10px">金鑰只存在這台裝置的瀏覽器，不會上傳到本站。
+  辨識時商品圖與領標照會直接傳送至 Google。<span id="kstate"></span></div>
+  <div style="margin-top:8px;text-align:right"><button class="sec" id="kclear" style="width:auto;padding:6px 12px;font-size:12px">清除金鑰</button></div>
+</div></div>
 <div class="wrap">
 <div class="card">
   <label class="file"><input type="file" id="fi" accept="image/*">
@@ -82,15 +120,43 @@ td{padding:4px 0;border-bottom:1px solid var(--line)}td:last-child{text-align:ri
   </div>
   <div class="hint">藍框 = 自動可靠　橙框 = 建議人工確認。拖曳圖上的圓點可修正端點。</div>
   <div style="margin-top:10px"><canvas id="ov"></canvas></div>
-  <div style="margin-top:12px">
-    <div class="k" style="font-size:11px;color:var(--dim);letter-spacing:.5px;margin-bottom:5px">品名（選填，會加在檔名前）</div>
-    <input id="fname" placeholder="例：adidas 活動T L 深藍"
-      style="width:100%;background:#20252f;color:#e6e8ec;border:1px solid #2a2f3a;border-radius:8px;padding:10px;font-size:14px">
-    <div class="hint" style="margin-top:6px">檔名：<span id="fpreview" style="color:var(--fg)">—</span></div>
-  </div>
-  <div class="row" style="margin-top:10px">
+  <div class="row" style="margin-top:12px">
     <button class="sec" id="dlp">下載商品圖</button>
     <button class="sec" id="dl">下載尺寸圖</button>
+  </div>
+</div>
+
+<div class="card" id="ncard" style="display:none">
+  <b style="font-size:13px">商品命名</b>
+  <div class="hint" style="margin-top:4px">尺碼、身高、版型、品類、主色由量測結果自動推導；品牌與風格可用 AI 從照片辨識。</div>
+
+  <label class="file" style="margin-top:10px;padding:14px"><input type="file" id="tagfi" accept="image/*">
+    <b id="taglabel" style="font-size:14px">＋ 加拍領標照片（選填）</b>
+    <div class="hint" style="margin-top:4px">有領標時品牌與材質辨識率高很多</div>
+  </label>
+
+  <div class="row" style="margin-top:10px">
+    <button class="sec" id="ai">AI 辨識並命名</button>
+  </div>
+  <div class="hint" id="aistate" style="margin-top:6px"></div>
+
+  <div class="fields" style="margin-top:12px">
+    <div><label>品牌</label><input id="f_brand" placeholder="adidas"></div>
+    <div><label>性別</label><input id="f_gender" placeholder="男款"></div>
+    <div><label>品類</label><input id="f_cat" placeholder="短袖T恤"></div>
+    <div><label>主色</label><input id="f_color" placeholder="深藍"></div>
+    <div><label>圖樣</label><input id="f_pattern" placeholder="印字LOGO"></div>
+    <div><label>尺碼</label><input id="f_size" placeholder="L"></div>
+    <div><label>適穿身高</label><input id="f_height" placeholder="170-180"></div>
+    <div><label>版型</label><input id="f_fit" placeholder="標準"></div>
+    <div class="wide"><label>風格 / 場合</label><input id="f_style" placeholder="運動休閒"></div>
+    <div class="wide"><label>材質</label><input id="f_mat" placeholder="聚酯纖維"></div>
+  </div>
+
+  <div class="title-box" id="title">—</div>
+  <div class="hint" style="margin-top:6px">檔名：<span id="fpreview" style="color:var(--fg)">—</span></div>
+  <div class="row" style="margin-top:10px">
+    <button class="sec" id="copy">複製標題</button>
   </div>
 </div>
 
@@ -342,8 +408,8 @@ function run(){
   $('vS').textContent=(R.shoulder/10).toFixed(1);
   $('vW').textContent=(R.hem/10).toFixed(1);
   mark('meas','ok',`共 ${(performance.now()-t0|0)} ms`);
-  $('rcard').style.display='';
-  initOverlay(); refreshName();
+  $('rcard').style.display='';$('ncard').style.display='';
+  initOverlay(); fillDerived();
 }
 function invMat(H){const I=new cv.Mat();cv.invert(H,I);return I}
 
@@ -476,7 +542,7 @@ function recalc(){
   HAND.forEach(h=>{const mm=Math.abs(h.c-h.a)/P;$(map[h.key]).textContent=(mm/10).toFixed(1);
     $(map[h.key]).closest('.m').className='m man'});
   $('vL').textContent=(ST.R.length/10).toFixed(1);
-  refreshName();
+  buildTitle();
 }
 function paint(){
   const x=$('ov').getContext('2d');
@@ -526,13 +592,174 @@ function plainCanvas(){                       // garment on white, no annotation
   x.drawImage(BASE,PAD,PAD);
   return c;
 }
-function autoName(){
-  const g=id=>$(id).textContent.replace('.','');       // 63.8 -> 638
-  const n=($('fname').value||'').trim().replace(/[\\/:*?"<>|\s]+/g,'_');
-  return `${n?n+'_':''}肩${g('vS')}_胸${g('vC')}_腰${g('vW')}_長${g('vL')}`;
+
+/* ---------- derived attributes (from geometry + colour) ---------- */
+function colourName(r,g,b){
+  const mx=Math.max(r,g,b),mn=Math.min(r,g,b),d=mx-mn;
+  const v=mx/255, sat=mx?d/mx:0;
+  let h=0;
+  if(d){ h = mx===r ? 60*(((g-b)/d)%6) : mx===g ? 60*((b-r)/d+2) : 60*((r-g)/d+4); }
+  if(h<0)h+=360;
+  if(sat<0.14) return v>0.82?'白':v>0.55?'淺灰':v>0.28?'灰':'黑';
+  const dark=v<0.42, pale=sat<0.34&&v>0.72;
+  const base = h<15||h>=340 ? '紅' : h<40 ? '橘' : h<70 ? '黃' :
+               h<160 ? '綠' : h<200 ? '青' : h<255 ? '藍' :
+               h<290 ? '紫' : '桃紅';
+  if(base==='藍') return dark?'深藍':pale?'水藍':'藍';
+  if(base==='綠') return dark?'墨綠':pale?'淺綠':'綠';
+  if(base==='紅') return dark?'酒紅':pale?'粉紅':'紅';
+  if(base==='橘') return dark?'咖啡':pale?'米色':'橘';
+  if(base==='黃') return dark?'卡其':pale?'鵝黃':'黃';
+  if(base==='紫') return dark?'深紫':pale?'淡紫':'紫';
+  return (dark?'深':pale?'淺':'')+base;
 }
-function refreshName(){ $('fpreview').textContent=autoName()+'_商品.jpg  /  '+autoName()+'_尺寸.jpg' }
-$('fname').oninput=refreshName;
+function meanColour(){
+  const m=cv.mean(ST.upColor,ST.up);          // RGBA mean inside the mask
+  return colourName(m[0],m[1],m[2]);
+}
+const SIZES=[[44,'S','160-170'],[47.5,'M','165-175'],[51.5,'L','170-180'],
+             [55,'XL','175-185'],[999,'2XL','180-190']];
+function derive(){
+  const R=ST.R, chest=(HAND.find(h=>h.key==='chest')?Math.abs(HAND[1].c-HAND[1].a)/P:R.chest)/10;
+  const len=R.length/10, span=R.prof[R._ymax];
+  const sz=SIZES.find(s=>chest<s[0]);
+  const ratio=chest*2/len;
+  const fit = ratio<1.45?'合身':ratio<1.62?'標準':ratio<1.78?'寬鬆':'Oversize';
+  const sr = span/(chest*10);
+  const cat = sr<1.20?'背心':sr<2.05?'短袖T恤':sr<2.35?'七分袖上衣':'長袖上衣';
+  return {size:sz[1],height:sz[2],fit,cat,colour:meanColour()};
+}
+function fillDerived(){
+  const d=derive();
+  const set=(id,v)=>{ if(!$(id).value) $(id).value=v };
+  set('f_size',d.size); set('f_height',d.height); set('f_fit',d.fit);
+  set('f_cat',d.cat);   set('f_color',d.colour);
+  buildTitle();
+}
+
+/* ---------- title ---------- */
+const F=id=>($(id).value||'').trim();
+function buildTitle(){
+  const parts=[
+    F('f_brand'), F('f_gender'), F('f_cat'),
+    [F('f_color'),F('f_pattern')].filter(Boolean).join(''),
+    F('f_size')?F('f_size')+'號':'',
+    F('f_height')?'適穿'+F('f_height'):'',
+    F('f_fit')==='標準'?'':F('f_fit'),
+    F('f_style'), F('f_mat'), '二手'
+  ].filter(Boolean);
+  const t=parts.join(' ');
+  $('title').textContent=t;
+  refreshName();
+  return t;
+}
+document.querySelectorAll('.fields input').forEach(el=>el.oninput=buildTitle);
+
+function autoName(){                    // compact: identity + sizes, not the whole title
+  const g=id=>$(id).textContent.replace('.','');
+  const id_=[F('f_brand'),F('f_gender'),F('f_cat'),F('f_color'),F('f_size')]
+    .filter(Boolean).join('_').replace(/[\\/:*?"<>|]/g,'').replace(/\s+/g,'');
+  return `${id_?id_+'_':''}肩${g('vS')}_胸${g('vC')}_腰${g('vW')}_長${g('vL')}`;
+}
+function refreshName(){ $('fpreview').textContent=autoName()+'_商品.jpg　/　…_尺寸.jpg' }
+$('copy').onclick=()=>{navigator.clipboard.writeText($('title').textContent)
+  .then(()=>{$('copy').textContent='已複製 ✓';setTimeout(()=>$('copy').textContent='複製標題',1400)})};
+
+/* ---------- BYOK settings ---------- */
+const LS={key:'cm_apikey',model:'cm_model'};
+const getKey=()=>localStorage.getItem(LS.key)||'';
+const getModel=()=>localStorage.getItem(LS.model)||'gemini-3.6-flash';
+function syncKeyUI(){
+  $('kkey').value=getKey(); $('kmodel').value=getModel();
+  $('kstate').textContent=getKey()?'　目前狀態：已設定金鑰':'　目前狀態：尚未設定';
+  $('gear').style.color=getKey()?'var(--ok)':'var(--fg)';
+}
+$('gear').onclick=()=>{syncKeyUI();$('kmask').classList.add('on')};
+$('kmask').onclick=e=>{if(e.target===$('kmask'))$('kmask').classList.remove('on')};
+$('ksave').onclick=()=>{localStorage.setItem(LS.key,$('kkey').value.trim());
+  localStorage.setItem(LS.model,$('kmodel').value);syncKeyUI();$('kmask').classList.remove('on')};
+$('kclear').onclick=()=>{localStorage.removeItem(LS.key);syncKeyUI()};
+$('kget').onclick=()=>window.open('https://aistudio.google.com/apikey','_blank');
+syncKeyUI();
+
+/* ---------- vision model ---------- */
+let TAGB64=null;
+$('tagfi').onchange=e=>{const f=e.target.files[0];if(!f)return;
+  shrink(f,1024).then(b=>{TAGB64=b;$('taglabel').textContent='✓ 已加入領標照片（點此更換）'})};
+function shrink(file,max){
+  return createImageBitmap(file,{imageOrientation:'from-image'}).then(bm=>{
+    const s=Math.min(1,max/Math.max(bm.width,bm.height));
+    const c=document.createElement('canvas');
+    c.width=Math.round(bm.width*s);c.height=Math.round(bm.height*s);
+    c.getContext('2d').drawImage(bm,0,0,c.width,c.height);
+    return c.toDataURL('image/jpeg',0.85).split(',')[1];
+  });
+}
+function canvasB64(cv2,max){
+  const s=Math.min(1,max/Math.max(cv2.width,cv2.height));
+  const c=document.createElement('canvas');
+  c.width=Math.round(cv2.width*s);c.height=Math.round(cv2.height*s);
+  c.getContext('2d').drawImage(cv2,0,0,c.width,c.height);
+  return c.toDataURL('image/jpeg',0.85).split(',')[1];
+}
+const SCHEMA={type:'object',properties:{
+  brand:{type:'string'},gender:{type:'string'},category:{type:'string'},
+  pattern:{type:'string'},style:{type:'string'},material:{type:'string'},
+  notes:{type:'string'}},required:['brand','gender','category','pattern','style','material']};
+
+const MODELS=[getModel(),'gemini-3.6-flash','gemini-3.5-flash-lite','gemini-2.5-flash'];
+async function askModel(parts){
+  const key=getKey(); let lastErr='';
+  for(const m of [...new Set(MODELS)]){
+    try{
+      const r=await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${m}:generateContent?key=${encodeURIComponent(key)}`,
+        {method:'POST',headers:{'Content-Type':'application/json'},
+         body:JSON.stringify({contents:[{parts}],
+           generationConfig:{responseMimeType:'application/json',responseSchema:SCHEMA,temperature:0}})});
+      if(!r.ok){ lastErr=`${m}: HTTP ${r.status}`; if(r.status===404||r.status===400)continue; throw new Error(lastErr); }
+      const j=await r.json();
+      const t=j.candidates?.[0]?.content?.parts?.[0]?.text;
+      if(!t){lastErr=`${m}: 空回應`;continue}
+      return {data:JSON.parse(t),model:m};
+    }catch(e){ lastErr=`${m}: ${e.message}` }
+  }
+  throw new Error(lastErr||'呼叫失敗');
+}
+$('ai').onclick=async()=>{
+  if(!getKey()){$('aistate').innerHTML='<span style="color:var(--warn)">尚未設定金鑰 — 請點右上角齒輪</span>';
+    $('gear').click();return}
+  const d=derive();
+  $('ai').disabled=true;$('aistate').textContent='辨識中…';
+  const prompt=`你是二手服飾上架助理。看圖判斷這件衣服的屬性，回傳 JSON。
+
+已知的量測結果（請當作事實，不要推翻）：
+- 衣長 ${(ST.R.length/10).toFixed(1)} cm、胸寬(腋下) ${$('vC').textContent} cm、肩寬 ${$('vS').textContent} cm、下擺 ${$('vW').textContent} cm
+- 推導尺碼 ${d.size}、版型 ${d.fit}
+
+各欄位要求：
+- brand：品牌英文原名（如 adidas、UNIQLO）。看不出來就回空字串，不要猜。
+- gender：男款 / 女款 / 中性 / 童裝，擇一。
+- category：具體品類，如 短袖T恤、長袖上衣、連帽外套、襯衫、洋裝。
+- pattern：圖樣特徵，簡短 6 字內，如 素色、印字LOGO、滿版印花、橫條紋。
+- style：風格或適合場合，簡短 6 字內，如 運動休閒、日系復古、正式上班、街頭潮流。
+- material：材質，看得到洗標才填（如 聚酯纖維、純棉），否則空字串。
+- notes：其他值得寫進商品描述的特徵，一句話。
+
+全部用繁體中文，品牌保留英文原名。不確定的欄位一律回空字串。`;
+  const parts=[{text:prompt},{inline_data:{mime_type:'image/jpeg',data:canvasB64(plainCanvas(),900)}}];
+  if(TAGB64) parts.push({text:'以下是領標／洗標照片：'},{inline_data:{mime_type:'image/jpeg',data:TAGB64}});
+  try{
+    const {data,model}=await askModel(parts);
+    const put=(id,v)=>{ if(v&&v.trim()) $(id).value=v.trim() };
+    put('f_brand',data.brand); put('f_gender',data.gender); put('f_cat',data.category);
+    put('f_pattern',data.pattern); put('f_style',data.style); put('f_mat',data.material);
+    buildTitle();
+    $('aistate').innerHTML=`<span style="color:var(--ok)">✓ 完成（${model}）</span>`+
+      (data.notes?`　${data.notes}`:'');
+  }catch(e){ $('aistate').innerHTML=`<span style="color:var(--err)">失敗：${e.message}</span>` }
+  $('ai').disabled=false;
+};
+
 $('dlp').onclick=()=>saveCanvas(plainCanvas(),autoName()+'_商品.jpg');
 $('dl').onclick =()=>saveCanvas($('ov'),        autoName()+'_尺寸.jpg');
 
