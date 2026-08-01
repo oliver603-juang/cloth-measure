@@ -638,8 +638,11 @@ function measure(up,forced){
   let ymax=0;for(let i=1;i<h;i++)if(span[i]>span[ymax])ymax=i; R._ymax=ymax;
 
   if(!isBottom){
-    // chest: narrowest point below the sleeves
-    const lo=Math.min(ymax+Math.round(5*P),h-2), hi=Math.max(lo+2,Math.round(h*0.80));
+    // chest: narrowest point just below the sleeves.  The armpit always sits close under
+    // the widest row — searching all the way to the hem lets a boxy, straight-cut body
+    // win instead, which puts the line far too low.
+    const lo=Math.min(ymax+Math.round(5*P),h-2);
+    const hi=Math.max(lo+2,Math.min(Math.round(h*0.80),ymax+Math.round(h*0.35)));
     let yp=lo;for(let i=lo;i<hi;i++)if(span[i]<span[yp])yp=i;
     R.chest=span[yp]; R._yp=yp;
     // hem: 90th percentile of the bottom fifth (straight hems sit at the very bottom,
