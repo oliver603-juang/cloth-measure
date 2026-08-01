@@ -61,7 +61,7 @@ td{padding:4px 0;border-bottom:1px solid var(--line)}td:last-child{text-align:ri
 <header>
   <div class="grow"><h1>衣物尺寸量測</h1>
   <div class="sub">ArUco 校正 → 分割去背 → 尺寸量測 → AI 命名　<span id="build"
-    style="opacity:.55">build 08-01 04:37</span></div></div>
+    style="opacity:.55">build 08-01 05:29</span></div></div>
   <button id="gear" title="設定 AI 金鑰">⚙</button>
 </header>
 
@@ -187,7 +187,7 @@ td{padding:4px 0;border-bottom:1px solid var(--line)}td:last-child{text-align:ri
 </div>
 <script>
 const DICT=[46386, 3994, 13101, 39238, 21662, 31181, 40494, 50418, 65242, 53078, 63889, 4519, 3767, 10767, 9393, 9790, 18021, 26112, 27742, 30383, 34443, 45099, 52437, 56706, 65095, 38001, 44260, 42324, 8483, 13423, 17429, 22450, 40655, 61643, 2222, 2345, 6261, 1279, 3574, 7258, 5912, 10792, 12940, 14514, 9448, 12011, 11583, 19300, 20526, 20499];
-const BUILD='08-01 04:37';
+const BUILD='08-01 05:29';
 const DIAG={};
 function diagShow(){
   const rows=Object.entries(DIAG).map(([k,v])=>`<tr><td>${k}</td><td>${v}</td></tr>`).join('');
@@ -502,8 +502,8 @@ function cleanMask(th){
   const heavy=largestBlob(closed); closed.delete();
   const keep = heavy.area>0 ? gentle.area/heavy.area : 1;
   DIAG['精細 / 閉運算面積']=`${gentle.area} / ${heavy.area}　保留率 ${keep.toFixed(3)}`;
-  if(gentle.blob && keep>=0.90){
-    DIAG['分割分支']='精細（保留率 ≥ 0.90，缺口不填）';
+  if(gentle.blob && keep>=0.75){
+    DIAG['分割分支']='精細（保留率 ≥ 0.75，缺口不填）';
     if(heavy.blob)heavy.blob.delete();
     return fillAndSmooth(gentle.blob);
   }
@@ -562,6 +562,55 @@ function otsuGreyMask(roi){
   g.delete();
   return th;
 }
+/* Perimeter^2 / area: a clean silhouette scores low, a mask whose boundary keeps
+   flipping between garment and board scores high.                                  */
+function roughness(m){
+  const cts=new cv.MatVector(),hi=new cv.Mat();
+  cv.findContours(m,cts,hi,cv.RETR_EXTERNAL,cv.CHAIN_APPROX_NONE);
+  let best=-1,r=0;
+  for(let i=0;i<cts.size();i++){
+    const c=cts.get(i), a=Math.abs(cv.contourArea(c));
+    if(a>best){best=a; const p=cv.arcLength(c,true); r=a>0?p*p/a:0}
+  }
+  cts.delete();hi.delete();
+  return r;
+}
+/* GrabCut refinement.  When garment and board are close in colour the threshold keeps
+   flip-flopping along the boundary and the silhouette comes out ragged, which ruins the
+   product photo even though the measurements survive.  Seeding GrabCut from the current
+   mask lets the colour model plus a smoothness prior redraw a clean edge.           */
+function grabcutRefine(roi,m){
+  const SC=0.45, IT=2;
+  const small=new cv.Mat(), ms=new cv.Mat();
+  cv.resize(roi,small,new cv.Size(0,0),SC,SC,cv.INTER_AREA);
+  cv.resize(m,ms,new cv.Size(small.cols,small.rows),0,0,cv.INTER_NEAREST);
+  const rgb=new cv.Mat(); cv.cvtColor(small,rgb,cv.COLOR_RGBA2RGB); small.delete();
+  const k25=cv.getStructuringElement(cv.MORPH_RECT,new cv.Size(13,13));
+  const k35=cv.getStructuringElement(cv.MORPH_RECT,new cv.Size(19,19));
+  const er=new cv.Mat(), di=new cv.Mat();
+  cv.erode(ms,er,k25); cv.dilate(ms,di,k35); k25.delete();k35.delete();
+  const gc=new cv.Mat(ms.rows,ms.cols,cv.CV_8U,new cv.Scalar(cv.GC_BGD));
+  gc.setTo(new cv.Scalar(cv.GC_PR_BGD));
+  gc.setTo(new cv.Scalar(cv.GC_PR_FGD),di);
+  gc.setTo(new cv.Scalar(cv.GC_FGD),er);
+  const inv=new cv.Mat(); cv.bitwise_not(di,inv);
+  gc.setTo(new cv.Scalar(cv.GC_BGD),inv); inv.delete();
+  const bgd=new cv.Mat(),fgd=new cv.Mat();
+  try{ cv.grabCut(rgb,gc,new cv.Rect(0,0,1,1),bgd,fgd,IT,cv.GC_INIT_WITH_MASK); }
+  catch(e){ [rgb,ms,er,di,gc,bgd,fgd].forEach(x=>x.delete()); return null }
+  const lo=new cv.Mat(gc.rows,gc.cols,cv.CV_8U,new cv.Scalar(cv.GC_FGD));
+  const hi2=new cv.Mat(gc.rows,gc.cols,cv.CV_8U,new cv.Scalar(cv.GC_PR_FGD));
+  const a=new cv.Mat(),b2=new cv.Mat(),out=new cv.Mat();
+  cv.compare(gc,lo,a,cv.CMP_EQ); cv.compare(gc,hi2,b2,cv.CMP_EQ);
+  cv.bitwise_or(a,b2,out);
+  [rgb,ms,er,di,gc,bgd,fgd,lo,hi2,a,b2].forEach(x=>x.delete());
+  const big=new cv.Mat();
+  cv.resize(out,big,new cv.Size(m.cols,m.rows),0,0,cv.INTER_LINEAR); out.delete();
+  cv.threshold(big,big,127,255,cv.THRESH_BINARY);
+  const lb=largestBlob(big); big.delete();
+  return lb.blob ? fillAndSmooth(lb.blob) : null;
+}
+
 function segment(roi){
   const tot=roi.rows*roi.cols, tried=[];
   for(const [how,fn] of [['背景色差法',bgDistanceMask],['Otsu 亮度法',otsuGreyMask]]){
@@ -569,8 +618,22 @@ function segment(roi){
     try{ raw=fn(roi); m=cleanMask(raw); }catch(e){ tried.push(`${how} 失敗`); }
     if(raw)raw.delete();
     if(!m){ tried.push(`${how} 找不到區塊`); continue }
-    const frac=cv.countNonZero(m)/tot;
-    if(frac>=AREA_MIN&&frac<=AREA_MAX) return {mask:m,how,frac};
+    let frac=cv.countNonZero(m)/tot;
+    if(frac>=AREA_MIN&&frac<=AREA_MAX){
+      const r0=roughness(m);
+      DIAG['邊緣粗糙度']=r0.toFixed(1);
+      if(r0>30){                                   // ragged boundary -> worth refining
+        const g=grabcutRefine(roi,m);
+        if(g){
+          const r1=roughness(g), f1=cv.countNonZero(g)/tot;
+          if(r1<r0 && f1>=AREA_MIN && f1<=AREA_MAX){
+            m.delete(); m=g; frac=f1;
+            DIAG['邊緣粗糙度']=`${r0.toFixed(1)} → ${r1.toFixed(1)}（GrabCut 精修）`;
+          } else { g.delete(); DIAG['邊緣粗糙度']=`${r0.toFixed(1)}（GrabCut 未改善，維持原狀）` }
+        }
+      }
+      return {mask:m,how,frac};
+    }
     tried.push(`${how} ${(frac*100).toFixed(1)}%`);
     m.delete();
   }
