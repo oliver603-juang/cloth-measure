@@ -60,7 +60,8 @@ td{padding:4px 0;border-bottom:1px solid var(--line)}td:last-child{text-align:ri
 <body>
 <header>
   <div class="grow"><h1>衣物尺寸量測</h1>
-  <div class="sub">ArUco 校正 → 分割去背 → 尺寸量測 → AI 命名</div></div>
+  <div class="sub">ArUco 校正 → 分割去背 → 尺寸量測 → AI 命名　<span id="build"
+    style="opacity:.55">build 08-01 04:37</span></div></div>
   <button id="gear" title="設定 AI 金鑰">⚙</button>
 </header>
 
@@ -165,6 +166,15 @@ td{padding:4px 0;border-bottom:1px solid var(--line)}td:last-child{text-align:ri
   </div>
 </div>
 
+<div class="card" id="diagcard" style="display:none">
+  <b style="font-size:13px">診斷資訊</b>
+  <div class="hint" style="margin-top:4px">手機與桌機結果不一致時，請把這一區截圖給我。</div>
+  <table style="margin-top:8px" id="diagtbl"></table>
+  <div class="row" style="margin-top:10px">
+    <button class="sec" id="diagcopy">複製診斷文字</button>
+  </div>
+</div>
+
 <div class="card" id="dbg" style="display:none">
   <b style="font-size:13px">中間結果</b>
   <div class="thumbs">
@@ -177,6 +187,15 @@ td{padding:4px 0;border-bottom:1px solid var(--line)}td:last-child{text-align:ri
 </div>
 <script>
 const DICT=[46386, 3994, 13101, 39238, 21662, 31181, 40494, 50418, 65242, 53078, 63889, 4519, 3767, 10767, 9393, 9790, 18021, 26112, 27742, 30383, 34443, 45099, 52437, 56706, 65095, 38001, 44260, 42324, 8483, 13423, 17429, 22450, 40655, 61643, 2222, 2345, 6261, 1279, 3574, 7258, 5912, 10792, 12940, 14514, 9448, 12011, 11583, 19300, 20526, 20499];
+const BUILD='08-01 04:37';
+const DIAG={};
+function diagShow(){
+  const rows=Object.entries(DIAG).map(([k,v])=>`<tr><td>${k}</td><td>${v}</td></tr>`).join('');
+  $('diagtbl').innerHTML=rows; $('diagcard').style.display='';
+}
+function diagText(){
+  return `build ${BUILD}\n`+Object.entries(DIAG).map(([k,v])=>`${k}: ${v}`).join('\n');
+}
 const P=2.0;                 // px per mm in rectified space
 let cvReady=false, imgEl=null, ST={};
 const $=id=>document.getElementById(id);
@@ -217,11 +236,22 @@ function loadCv(i){
 loadCv(0);
 
 $('fi').onchange=e=>{const f=e.target.files[0];if(!f)return;
- const im=new Image();im.onload=()=>{imgEl=im;chk();
-   document.querySelector('label.file b').textContent=`已載入 ${im.width}×${im.height}`;};
+ // decode straight into a canvas and hand that to cv.imread.  The old path went through
+ // toDataURL('image/jpeg'), and that re-encode is a platform-dependent step that can
+ // shift pixel values enough to matter on a low-contrast garment.
  createImageBitmap(f,{imageOrientation:'from-image'}).then(bm=>{
-   const c=document.createElement('canvas');c.width=bm.width;c.height=bm.height;
-   c.getContext('2d').drawImage(bm,0,0);im.src=c.toDataURL('image/jpeg',0.95);});};
+   const MAXPX=24e6, sc=Math.min(1,Math.sqrt(MAXPX/(bm.width*bm.height)));
+   const c=document.createElement('canvas');
+   c.width=Math.round(bm.width*sc); c.height=Math.round(bm.height*sc);
+   const cx=c.getContext('2d',{alpha:false});
+   cx.imageSmoothingQuality='high';
+   cx.drawImage(bm,0,0,c.width,c.height);
+   DIAG['檔案']=`${f.name} ${(f.size/1048576).toFixed(2)} MB`;
+   DIAG['解碼尺寸']=`${bm.width}×${bm.height}`+(sc<1?` → ${c.width}×${c.height}`:'');
+   imgEl=c; chk();
+   document.querySelector('label.file b').textContent=`已載入 ${c.width}×${c.height}`;
+   bm.close&&bm.close();
+ }).catch(err=>{document.querySelector('label.file b').textContent='讀取失敗：'+err.message});};
 function chk(){$('run').disabled=!(cvReady&&imgEl);}
 $('run').onclick=()=>{setTimeout(run,30);};
 
@@ -315,8 +345,10 @@ function run(){
   $('qcard').style.display='';$('dbg').style.display='';$('rcard').style.display='none';
   const t0=performance.now();
   // --- load & downscale
+  DIAG['裝置']=`${navigator.userAgent.match(/Android|iPhone|iPad|Windows|Mac|Linux/)?.[0]||'?'} · DPR ${devicePixelRatio} · ${screen.width}×${screen.height}`;
+  DIAG['OpenCV 來源']=$('d_load').textContent;
   const full=cv.imread(imgEl);
-  const s=1800/Math.max(full.cols,full.rows);
+  const s=Math.min(1,1800/Math.max(full.cols,full.rows));   // downscale only, never up
   const sm=new cv.Mat(); cv.resize(full,sm,new cv.Size(0,0),s,s,cv.INTER_AREA); full.delete();
   const gray=new cv.Mat(); cv.cvtColor(sm,gray,cv.COLOR_RGBA2GRAY);
 
@@ -325,10 +357,14 @@ function run(){
   let ms=detectMarkers(gray);
   ms=ms.filter(m=>m.id<4);
   if(ms.length<4){mark('aruco','err',`只找到 ${ms.length} 個 (${ms.map(m=>m.id).join(',')})，需要 4 個`);
-    $('q1').textContent=ms.map(m=>'ID'+m.id).join(' ')||'無';sm.delete();gray.delete();return;}
+    $('q1').textContent=ms.map(m=>'ID'+m.id).join(' ')||'無';
+    DIAG['標記']=ms.map(m=>m.id).join(',')||'無'; diagShow();
+    sm.delete();gray.delete();return;}
   try{ if(cv.cornerSubPix) refine(gray,ms); }catch(err){ console.warn('subpix skipped',err); }
   mark('aruco','ok',`ID ${ms.map(m=>m.id).sort().join(', ')}`);
   $('q1').textContent=ms.length+' / 4';
+  DIAG['分析尺寸']=`${gray.cols}×${gray.rows}`;
+  DIAG['標記']=ms.map(m=>m.id).sort().join(',');
 
   // --- homography
   mark('homo','run');
@@ -361,6 +397,7 @@ function run(){
   const res=[];for(let i=0;i<S.length/2;i++)res.push(Math.hypot(back.data32F[i*2]-S[i*2],back.data32F[i*2+1]-S[i*2+1]));
   let e=res.reduce((a,b)=>a+b,0)/res.length; back.delete();
   $('q2').textContent=e.toFixed(2)+' px';
+  DIAG['Reprojection error']=e.toFixed(2)+' px';
   mark(e<3?'homo':'homo',e<3?'ok':'err',e<3?`誤差 ${e.toFixed(2)} px`:`誤差過大 ${e.toFixed(2)} px — 檢查 W/H/m 常數`);
   const CW=Math.round((W_()+M_())*P), CH=Math.round((H_()+M_())*P);
   const rect=new cv.Mat(); cv.warpPerspective(sMat?sm:sm,rect,Hm,new cv.Size(CW,CH));
@@ -374,13 +411,15 @@ function run(){
   const roi=rect.roi(roiRect).clone();
   const segR=segment(roi);
   if(!segR.mask){
-    mark('seg','err',segR.msg);
+    mark('seg','err',segR.msg); diagShow();
     $('rcard').style.display='none';$('ncard').style.display='none';
     rect.delete();roi.delete();return;
   }
   const mask=segR.mask;
   const areaCm2=cv.countNonZero(mask)/(P*P)/100;
   mark('seg','ok',`${segR.how}・面積 ${areaCm2.toFixed(0)} cm²（佔板面 ${(segR.frac*100).toFixed(0)}%）`);
+  DIAG['分割方法']=segR.how;
+  DIAG['遮罩面積']=`${areaCm2.toFixed(0)} cm²（佔板面 ${(segR.frac*100).toFixed(1)}%）`;
   show('c2',mask);
 
   // --- upright by mirror symmetry
@@ -389,6 +428,9 @@ function run(){
   const cls=classify(up);
   if(cls.flip){cv.flip(up,up,-1);cv.flip(upColor,upColor,-1);ang+=180}
   $('q3').textContent=ang.toFixed(1)+'°'; $('q4').textContent=iou.toFixed(3);
+  DIAG['轉正角度 / 對稱 IoU']=`${ang.toFixed(1)}° / ${iou.toFixed(3)}`;
+  DIAG['缺口深度 上/下']=`${cls.dTop.toFixed(3)} / ${cls.dBot.toFixed(3)}　→ ${cls.isBottom?'下著':'上衣'}${cls.flip?'（翻轉180°）':''}`;
+  DIAG['遮罩尺寸']=`${up.cols}×${up.rows}`;
   mark(iou>0.75?'up':'up',iou>0.75?'ok':'err',
     iou>0.75?`角度 ${ang.toFixed(1)}°、IoU ${iou.toFixed(3)}`:`IoU ${iou.toFixed(3)} 偏低 — 袖子可能沒攤平`);
   show('c3',up);
@@ -401,7 +443,10 @@ function run(){
   mark('meas','ok',`${R.type==='top'?'上衣':'下著'}・共 ${(performance.now()-t0|0)} ms`);
   $('rcard').style.display='';$('ncard').style.display='';
   ST.cls=cls;
+  DIAG['耗時']=`${(performance.now()-t0|0)} ms`;
   initOverlay(); initCards(); fillDerived(); syncTypeUI();
+  DIAG['量測結果']=SPEC[R.type].cards.map(([id,n])=>n+' '+$(id).textContent).join('　');
+  diagShow();
 }
 function invMat(H){const I=new cv.Mat();cv.invert(H,I);return I}
 
@@ -441,17 +486,30 @@ function fillAndSmooth(m){
    bridge the crotch of a pair of shorts.  So close gently first, and only fall back to
    the heavy kernel when the largest blob fails to account for most of the thresholded
    pixels — i.e. when the mask really did shatter.                                    */
+/* A big closing merges a striped garment's bands back together, but it also bridges the
+   crotch of a pair of shorts.  Build both masks and compare them: closing only adds the
+   crotch triangle on a bottom garment (a few percent), whereas on a shattered striped
+   top it recovers a large part of the body.  That gap is wide, unlike comparing the
+   blob against the raw thresholded area, which for some garments lands within 0.004 of
+   the cut-off and then flips between devices.                                        */
 function cleanMask(th){
   const k9=cv.getStructuringElement(cv.MORPH_RECT,new cv.Size(9,9));
   cv.morphologyEx(th,th,cv.MORPH_OPEN,k9); k9.delete();
-  const total=cv.countNonZero(th);
-  const a=largestBlob(th);
-  if(a.blob && total>0 && a.area/total>=0.85) return fillAndSmooth(a.blob);
-  if(a.blob) a.blob.delete();
+  const gentle=largestBlob(th);
+  const closed=new cv.Mat(); th.copyTo(closed);
   const k41=cv.getStructuringElement(cv.MORPH_RECT,new cv.Size(41,41));
-  cv.morphologyEx(th,th,cv.MORPH_CLOSE,k41); k41.delete();
-  const b=largestBlob(th);
-  return b.blob ? fillAndSmooth(b.blob) : null;
+  cv.morphologyEx(closed,closed,cv.MORPH_CLOSE,k41); k41.delete();
+  const heavy=largestBlob(closed); closed.delete();
+  const keep = heavy.area>0 ? gentle.area/heavy.area : 1;
+  DIAG['精細 / 閉運算面積']=`${gentle.area} / ${heavy.area}　保留率 ${keep.toFixed(3)}`;
+  if(gentle.blob && keep>=0.90){
+    DIAG['分割分支']='精細（保留率 ≥ 0.90，缺口不填）';
+    if(heavy.blob)heavy.blob.delete();
+    return fillAndSmooth(gentle.blob);
+  }
+  DIAG['分割分支']='閉運算（精細版缺了一大塊）';
+  if(gentle.blob)gentle.blob.delete();
+  return heavy.blob ? fillAndSmooth(heavy.blob) : null;
 }
 function inv3(c){                      // inverse of a symmetric 3x3, c = [c00,c01,c02,c11,c12,c22]
   const [a,b,cc,d,e,f]=c;
@@ -491,13 +549,17 @@ function bgDistanceMask(roi){
   C.forEach(c=>c.delete()); ch.delete(); t.delete(); bm.delete();
   cv.sqrt(acc,acc);
   const d8=new cv.Mat(); cv.normalize(acc,d8,0,255,cv.NORM_MINMAX,cv.CV_8U); acc.delete();
-  const th=new cv.Mat(); cv.threshold(d8,th,0,255,cv.THRESH_BINARY+cv.THRESH_OTSU); d8.delete();
+  const th=new cv.Mat();
+  DIAG['背景色差 Otsu 閾值']=cv.threshold(d8,th,0,255,cv.THRESH_BINARY+cv.THRESH_OTSU).toFixed(0);
+  d8.delete();
   return th;
 }
 function otsuGreyMask(roi){
   const g=new cv.Mat(); cv.cvtColor(roi,g,cv.COLOR_RGBA2GRAY);
   cv.GaussianBlur(g,g,new cv.Size(5,5),0);
-  const th=new cv.Mat(); cv.threshold(g,th,0,255,cv.THRESH_BINARY_INV+cv.THRESH_OTSU); g.delete();
+  const th=new cv.Mat();
+  DIAG['灰階 Otsu 閾值']=cv.threshold(g,th,0,255,cv.THRESH_BINARY_INV+cv.THRESH_OTSU).toFixed(0);
+  g.delete();
   return th;
 }
 function segment(roi){
@@ -1096,6 +1158,10 @@ ${ST.R.type==='top'
 
 $('dlp').onclick=()=>saveCanvas(plainCanvas(),autoName()+'_商品.jpg');
 $('dl').onclick =()=>saveCanvas($('ov'),        autoName()+'_尺寸.jpg');
+
+$('build').textContent='build '+BUILD;
+$('diagcopy').onclick=()=>navigator.clipboard.writeText(diagText())
+  .then(()=>{$('diagcopy').textContent='已複製 ✓';setTimeout(()=>$('diagcopy').textContent='複製診斷文字',1400)});
 
 </script>
 </body></html>
