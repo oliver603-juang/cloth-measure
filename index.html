@@ -112,6 +112,11 @@ td{padding:4px 0;border-bottom:1px solid var(--line)}td:last-child{text-align:ri
 </div>
 
 <div class="card" id="rcard" style="display:none">
+  <div class="row" style="gap:6px;margin-bottom:10px">
+    <button class="sec" id="tTop" style="padding:8px;font-size:13px">上衣</button>
+    <button class="sec" id="tBot" style="padding:8px;font-size:13px">下著</button>
+  </div>
+  <div class="hint" style="margin:-4px 0 10px" id="tHint"></div>
   <div class="res">
     <div class="m auto"><div class="k">衣長 LENGTH</div><div class="v"><span id="vL">—</span> <small>cm</small></div></div>
     <div class="m auto"><div class="k">胸寬 CHEST (腋下)</div><div class="v"><span id="vC">—</span> <small>cm</small></div></div>
@@ -390,12 +395,13 @@ function run(){
 
   // --- measure
   mark('meas','run');
-  const R=measure(up);
+  const R=measure(up,TYPE_FORCED);
   drawProfile(R);
   ST={up,upColor,R,rect,mask,ang};
   mark('meas','ok',`${R.type==='top'?'上衣':'下著'}・共 ${(performance.now()-t0|0)} ms`);
   $('rcard').style.display='';$('ncard').style.display='';
-  initOverlay(); initCards(); fillDerived();
+  ST.cls=cls;
+  initOverlay(); initCards(); fillDerived(); syncTypeUI();
 }
 function invMat(H){const I=new cv.Mat();cv.invert(H,I);return I}
 
@@ -603,11 +609,11 @@ function notchDepth(two,fromEnd){
   for(let y=1;y<h;y++){ if(t[y])hit++; if(hit/(y+1)>=0.80) best=y; }
   return best/h;
 }
-function classify(up){
+function classify(up,forced){
   const count=widths(up).map(v=>v/P), span=spans(up).map(v=>v/P);
   const two=span.map((s,i)=>s-count[i] > 4);          // a hole of 4 mm or more
   const dTop=notchDepth(two,false), dBot=notchDepth(two,true);
-  const isBottom=Math.max(dTop,dBot)>0.18;
+  const isBottom = forced ? forced==='bottom' : Math.max(dTop,dBot)>0.18;
   let flip;
   if(isBottom) flip = dTop>dBot;                       // legs must end up at the bottom
   else { let mi=0;for(let i=1;i<span.length;i++)if(span[i]>span[mi])mi=i;
@@ -618,16 +624,16 @@ function classify(up){
 const SPEC={
   top:   {cards:[['vL','衣長'],['vC','胸寬'],['vS','肩寬'],['vW','下擺']],
           manual:['shoulder']},
-  bottom:{cards:[['vL','褲長'],['vC','腰寬'],['vS','臀寬'],['vW','褲口']],
-          manual:[]}
+  bottom:{cards:[['vL','褲長'],['vC','腰寬'],['vS','股上'],['vW','褲口']],
+          manual:['opening','rise']}
 };
 
-function measure(up){
+function measure(up,forced){
   const h=up.rows;
   const count=widths(up).map(v=>v/P), span=spans(up).map(v=>v/P);   // px -> mm
   const two=span.map((s,i)=>s-count[i] > 4);                        // hole of 4 mm or more
   const R={_h:h,_w:up.cols,prof:span,count,two,length:h/P};
-  const {isBottom}=classify(up);
+  const {isBottom}=classify(up,forced);
   R.type=isBottom?'bottom':'top';
   let ymax=0;for(let i=1;i<h;i++)if(span[i]>span[ymax])ymax=i; R._ymax=ymax;
 
@@ -649,22 +655,31 @@ function measure(up){
     // waistband: skip the belt loops / tab that stick up past the top edge
     const wLo=Math.round(h*0.03), wHi=Math.round(h*0.12);
     R.waist=pctl(span.slice(wLo,wHi),0.5);
-    let yw=wLo,bd=1e9;
-    for(let y=wLo;y<wHi;y++){const d=Math.abs(span[y]-R.waist);if(d<bd){bd=d;yw=y}}
+    let yw=wLo,dw=1e9;
+    for(let y=wLo;y<wHi;y++){const d=Math.abs(span[y]-R.waist);if(d<dw){dw=d;yw=y}}
     R._yw=yw;
     R._top=0; while(R._top<h && span[R._top]<0.5*R.waist) R._top++;
-    let yc=h-1; for(let y=0;y<h-Math.round(2*P);y++){
-      let all=true;for(let k=0;k<Math.round(2*P);k++) if(!two[y+k]){all=false;break}
-      if(all){yc=y;break} }
+    // crotch = the highest row from which the split still holds all the way down.
+    // Scanning downwards for the first gap is far too eager: a stray notch in the
+    // waistband elastic is enough to fire it.
+    let hits=0,yc=h-1;
+    for(let y=h-1;y>=0;y--){ if(two[y])hits++; if(hits/(h-y)>=0.85) yc=y; }
     R._yc=yc;
-    let yhip=R._top,best=0;
-    for(let y=R._top;y<yc;y++) if(span[y]>best){best=span[y];yhip=y}
-    R.hip=best; R._yhip=yhip;
-    const oLo=Math.round(h*0.90);
-    R.opening=pctl(count.slice(oLo).map(v=>v/2),0.5);   // symmetric legs -> half the pixels
-    R._yo=Math.round(h*0.95);
+    R.rise=(yc-R._top)/P;                       // 股上 / rise
+    // leg opening: measure each leg just above its OWN hem — the two hems sit at
+    // different heights whenever the legs splay.  A horizontal cut still runs slightly
+    // long on a splayed leg, so this stays a manual-confirm figure.
+    let yLeft=-1;
+    for(let y=h-1;y>yc;y--){
+      const [a,b]=rowRunOf(up,y);
+      if(a>=0 && (a+b)/2 < up.cols*0.55){yLeft=y;break}
+    }
+    const yo=(yLeft>0)?Math.max(yc+1,yLeft-Math.round(20*P)):Math.round(h*0.93);
+    const [ra,rb]=rowRunOf(up,yo);
+    R.opening=(ra>=0)?(rb-ra+1)/P:0;
+    R._yo=yo;
     R.length=(h-R._top)/P;
-    R.keys={length:'length',a:'waist',b:'hip',c:'opening'};
+    R.keys={length:'length',a:'waist',b:'rise',c:'opening'};
   }
   R.span=(y)=>rowSpanOf(up,y);
   return R;
@@ -683,8 +698,31 @@ function drawProfile(R){
   line(R._ys,'#ffb454','SHOULDER');line(R._yp,'#3ddc97','CHEST');line(R._yh,'#ff6b6b','WAIST');
 }
 
+/* ---------- garment type: geometry decides, the user can override ---------- */
+let TYPE_FORCED=null;
+function syncTypeUI(){
+  const t=ST.R.type;
+  $('tTop').style.background = t==='top'?'var(--acc)':'#242a35';
+  $('tTop').style.color      = t==='top'?'#04101f':'var(--fg)';
+  $('tBot').style.background = t==='bottom'?'var(--acc)':'#242a35';
+  $('tBot').style.color      = t==='bottom'?'#04101f':'var(--fg)';
+  $('tHint').textContent = TYPE_FORCED ? '已手動指定類型'
+    : `自動判定（缺口深度 ${Math.max(ST.cls.dTop,ST.cls.dBot).toFixed(2)}，門檻 0.18）`;
+}
+function setType(t){
+  if(ST.R.type===t){TYPE_FORCED=null;syncTypeUI();return}
+  TYPE_FORCED=t;
+  const c=classify(ST.up,t);
+  if(c.flip){cv.flip(ST.up,ST.up,-1);cv.flip(ST.upColor,ST.upColor,-1)}
+  ST.R=measure(ST.up,t);
+  show('c3',ST.up); drawProfile(ST.R);
+  initOverlay(); initCards(); fillDerived(); syncTypeUI();
+}
+$('tTop').onclick=()=>setType('top');
+$('tBot').onclick=()=>setType('bottom');
+
 /* ---------- interactive overlay ---------- */
-let HAND=[],LEN=null,drag=null,OVW=0,OVH=0,BASE=null,PAD=0,SCENE=null,LOUPE=null;
+let HAND=[],VLIST=[],drag=null,OVW=0,OVH=0,BASE=null,PAD=0,SCENE=null,LOUPE=null;
 
 function initOverlay(){
   const {up,R}=ST;
@@ -705,8 +743,8 @@ function initOverlay(){
   }else{
     const [oa,ob]=rowRunOf(up,R._yo);
     HAND=[mk(R._yw,'腰寬','waist','#e08c1e'),
-          mk(R._yhip,'臀寬','hip','#12a06a'),
-          {y:R._yo,a:oa,c:ob,label:'褲口',key:'opening',col:'#d94a4a',type:'h'}];
+          {y:R._yo,y2:R._yo,a:oa,c:ob,label:'褲口',key:'opening',col:'#d94a4a',
+           type:'h',free:true}];
   }
   // card captions follow the garment type
   SPEC[R.type].cards.forEach(([id,name])=>{
@@ -717,8 +755,11 @@ function initOverlay(){
 
   PAD=Math.round(up.cols*0.10);
   const ov=$('ov');OVW=ov.width=up.cols+2*PAD;OVH=ov.height=up.rows+2*PAD;
-  LEN={x:Math.round(-PAD*0.55),y1:(R.type==='bottom'?R._top:0),y2:up.rows-1,
-       label:R.type==='bottom'?'褲長':'衣長',key:'length',col:'#2f7fd6',type:'v'};
+  VLIST=[{x:Math.round(-PAD*0.55),y1:(R.type==='bottom'?R._top:0),y2:up.rows-1,
+          label:R.type==='bottom'?'褲長':'衣長',key:'length',col:'#2f7fd6',type:'v',side:-1}];
+  if(R.type==='bottom')
+    VLIST.push({x:up.cols+Math.round(PAD*0.55),y1:R._top,y2:R._yc,
+                label:'股上',key:'rise',col:'#8a63d2',type:'v',side:1});
 
   SCENE=document.createElement('canvas');SCENE.width=OVW;SCENE.height=OVH;
   LOUPE={on:false,x:0,y:0};
@@ -728,9 +769,10 @@ function initOverlay(){
     return [(t.clientX-r.left)/r.width*OVW-PAD,(t.clientY-r.top)/r.height*OVH-PAD]};
   const points=()=>{
     const out=[];
-    HAND.forEach((h,i)=>{out.push({m:h,i,p:[h.a,h.y],which:0});out.push({m:h,i,p:[h.c,h.y],which:1})});
-    out.push({m:LEN,p:[LEN.x,LEN.y1],which:0});
-    out.push({m:LEN,p:[LEN.x,LEN.y2],which:1});
+    HAND.forEach((h,i)=>{out.push({m:h,i,p:[h.a,h.y],which:0});
+                         out.push({m:h,i,p:[h.c,h.free?h.y2:h.y],which:1})});
+    VLIST.forEach(v=>{out.push({m:v,p:[v.x,v.y1],which:0});
+                      out.push({m:v,p:[v.x,v.y2],which:1})});
     return out;
   };
   const down=e=>{const [x,y]=pos(e);let bd=1e9;drag=null;
@@ -740,8 +782,9 @@ function initOverlay(){
   const move=e=>{if(!drag)return;e.preventDefault();const [x,y]=pos(e);
     const m=drag.m;
     if(m.type==='h'){
-      m.y=Math.max(0,Math.min(BASE.height-1,Math.round(y)));
-      if(drag.which)m.c=Math.round(x); else m.a=Math.round(x);
+      const yy=Math.max(0,Math.min(BASE.height-1,Math.round(y)));
+      if(m.free){ if(drag.which){m.c=Math.round(x);m.y2=yy} else {m.a=Math.round(x);m.y=yy} }
+      else { m.y=yy; if(drag.which)m.c=Math.round(x); else m.a=Math.round(x); }
     }else{
       const v=Math.max(-PAD,Math.min(BASE.height-1+PAD,Math.round(y)));
       if(drag.which)m.y2=v; else m.y1=v;
@@ -753,13 +796,15 @@ function initOverlay(){
   ov.ontouchstart=down;ov.ontouchmove=move;ov.ontouchend=upE;ov.ontouchcancel=upE;
 }
 function measured(key){
-  if(key==='length') return Math.abs(LEN.y2-LEN.y1)/P;
+  const v=VLIST.find(x=>x.key===key);
+  if(v) return Math.abs(v.y2-v.y1)/P;
   const h=HAND.find(x=>x.key===key);
-  return h?Math.abs(h.c-h.a)/P:0;
+  if(!h) return 0;
+  return h.free ? Math.hypot(h.c-h.a,h.y2-h.y)/P : Math.abs(h.c-h.a)/P;
 }
 function cardMap(){
   return ST.R.type==='top' ? {length:'vL',chest:'vC',shoulder:'vS',hem:'vW'}
-                           : {length:'vL',waist:'vC',hip:'vS',opening:'vW'};
+                           : {length:'vL',waist:'vC',rise:'vS',opening:'vW'};
 }
 function initCards(){
   const map=cardMap(), man=SPEC[ST.R.type].manual;
@@ -796,21 +841,25 @@ function paintScene(){
   const knob=(px,py)=>{x.beginPath();x.arc(px,py,R,0,7);x.fill();
     x.lineWidth=LW*0.6;x.strokeStyle='#fff';x.stroke()};
   HAND.forEach(h=>{
-    const a=h.a+PAD,c=h.c+PAD,y=h.y+PAD;
+    const a=h.a+PAD,c=h.c+PAD,y=h.y+PAD,y2=(h.free?h.y2:h.y)+PAD;
     x.lineWidth=LW;x.strokeStyle=h.col;x.fillStyle=h.col;
-    halo(()=>{x.beginPath();x.moveTo(a,y);x.lineTo(c,y);x.stroke();
-      [a,c].forEach(px=>{x.beginPath();x.moveTo(px,y-R);x.lineTo(px,y+R);x.stroke()})});
-    x.fillStyle=h.col; [a,c].forEach(px=>knob(px,y));
-    label(`${h.label} ${(Math.abs(h.c-h.a)/P/10).toFixed(1)} cm`,(a+c)/2,y,h.col);
+    const nx=(y2-y),ny=-(c-a),nl=Math.hypot(nx,ny)||1;   // tick marks stay perpendicular
+    const tx=nx/nl*R, ty=ny/nl*R;
+    halo(()=>{x.beginPath();x.moveTo(a,y);x.lineTo(c,y2);x.stroke();
+      [[a,y],[c,y2]].forEach(([px,py])=>{x.beginPath();
+        x.moveTo(px-tx,py-ty);x.lineTo(px+tx,py+ty);x.stroke()})});
+    x.fillStyle=h.col; [[a,y],[c,y2]].forEach(([px,py])=>knob(px,py));
+    label(`${h.label} ${(measured(h.key)/10).toFixed(1)} cm`,(a+c)/2,(y+y2)/2,h.col);
   });
-  // length, now draggable along the left margin
-  const lx=LEN.x+PAD, y1=LEN.y1+PAD, y2=LEN.y2+PAD;
-  x.lineWidth=LW;x.strokeStyle=LEN.col;x.fillStyle=LEN.col;
-  halo(()=>{x.beginPath();x.moveTo(lx,y1);x.lineTo(lx,y2);x.stroke();
-    [y1,y2].forEach(py=>{x.beginPath();x.moveTo(lx-R,py);x.lineTo(lx+R,py);x.stroke()})});
-  x.fillStyle=LEN.col; [y1,y2].forEach(py=>knob(lx,py));
-  x.save();x.translate(lx+FS*1.0,(y1+y2)/2);x.rotate(-Math.PI/2);
-  label(`${LEN.label} ${(measured('length')/10).toFixed(1)} cm`,0,0,LEN.col);x.restore();
+  VLIST.forEach(v=>{
+    const lx=v.x+PAD, y1=v.y1+PAD, y2=v.y2+PAD;
+    x.lineWidth=LW;x.strokeStyle=v.col;x.fillStyle=v.col;
+    halo(()=>{x.beginPath();x.moveTo(lx,y1);x.lineTo(lx,y2);x.stroke();
+      [y1,y2].forEach(py=>{x.beginPath();x.moveTo(lx-R,py);x.lineTo(lx+R,py);x.stroke()})});
+    x.fillStyle=v.col; [y1,y2].forEach(py=>knob(lx,py));
+    x.save();x.translate(lx+FS*1.0*(v.side||-1)*-1,(y1+y2)/2);x.rotate(-Math.PI/2);
+    label(`${v.label} ${(measured(v.key)/10).toFixed(1)} cm`,0,0,v.col);x.restore();
+  });
   x.textAlign='right';x.font=`${FS*0.6}px -apple-system,system-ui,sans-serif`;
   x.fillStyle='rgba(0,0,0,.28)';
   x.fillText('ArUco 校正量測',OVW-FS*0.5,OVH-FS*0.45);
@@ -893,10 +942,10 @@ const SIZES_BOT=[[36,'S','66-72'],[39,'M','72-78'],[42,'L','78-84'],
 function derive(){
   const R=ST.R, len=measured('length')/10;
   if(R.type==='bottom'){
-    const waist=measured('waist')/10, hip=measured('hip')/10;
+    const waist=measured('waist')/10, open_=measured('opening')/10;
     const sz=SIZES_BOT.find(s=>waist<s[0]);
-    const r=hip/Math.max(waist,1);
-    const fit = r<1.12?'合身':r<1.28?'標準':'寬鬆';
+    const r=open_/Math.max(waist,1);
+    const fit = r<0.42?'窄管':r<0.54?'標準':'寬管';
     const cat = len<58?'短褲':len<85?'七分褲':'長褲';
     return {size:sz[1],height:sz[2],fit,cat,colour:meanColour()};
   }
