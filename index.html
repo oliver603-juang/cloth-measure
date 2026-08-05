@@ -61,7 +61,7 @@ td{padding:4px 0;border-bottom:1px solid var(--line)}td:last-child{text-align:ri
 <header>
   <div class="grow"><h1>衣物尺寸量測</h1>
   <div class="sub">ArUco 校正 → 分割去背 → 尺寸量測 → AI 命名　<span id="build"
-    style="opacity:.55">build 08-01 05:29</span></div></div>
+    style="opacity:.55">build 08-05 13:24</span></div></div>
   <button id="gear" title="設定 AI 金鑰">⚙</button>
 </header>
 
@@ -186,8 +186,18 @@ td{padding:4px 0;border-bottom:1px solid var(--line)}td:last-child{text-align:ri
 </div>
 </div>
 <script>
-const DICT=[46386, 3994, 13101, 39238, 21662, 31181, 40494, 50418, 65242, 53078, 63889, 4519, 3767, 10767, 9393, 9790, 18021, 26112, 27742, 30383, 34443, 45099, 52437, 56706, 65095, 38001, 44260, 42324, 8483, 13423, 17429, 22450, 40655, 61643, 2222, 2345, 6261, 1279, 3574, 7258, 5912, 10792, 12940, 14514, 9448, 12011, 11583, 19300, 20526, 20499];
-const BUILD='08-01 05:29';
+const DICT=[46386, 3994, 13101, 39238, 21662, 31181, 40494, 50418, 65242, 53078, 63889, 4519, 3767, 10767, 9393, 9790, 18021, 26112, 27742, 30383, 34443, 45099, 52437, 56706, 65095, 38001, 44260, 42324, 8483, 13423, 17429, 22450, 40655, 61643, 2222, 2345, 6261, 1279, 3574, 7258, 5912, 10792, 12940, 14514, 9448, 12011, 11583, 19300, 20526, 20499];            // DICT_4X4_50, 16-bit words
+const DICT5=[21344956, 1836774, 28249821, 17012215, 28226852, 30672941, 13883372, 14816363, 17654066, 20004773, 20770307, 27450048, 31861521, 6189414, 33356968, 5366655, 9938776, 12493423, 16141764, 17178088, 19782261, 22078528, 23792801, 12194526, 27054115, 27629938, 29609611, 2245190, 3905138, 2368059, 2570094, 3573875, 4247758, 4893384, 4604858, 8024042, 10062508, 8573185, 10136861, 8797298, 11348005, 10825630, 14174711, 12782041, 14319153, 15295098, 15317399, 16336902, 16093477, 16168919, 18569444, 18535033, 18757643, 18256965, 19921738, 22596493, 22644720, 21114847, 21893671, 22470434, 24370161, 23382332, 24951686, 25692807, 26298333, 25488266, 26052013, 28495273, 29015411, 32101426, 31941928, 16086026, 28383827, 1625701, 2798105, 10021249, 11011612, 21078360, 25506124, 26661164, 33215394, 598709, 1686752, 742524, 182127, 1254025, 1233575, 805699, 424901, 1026573, 2039636, 3729529, 3291939, 2897479, 2991387, 3054989, 2606434, 4128245, 5381856, 4493053];          // DICT_5X5_100, 25-bit words
+/* Two physical boards.  legacy: four 4x4 markers taped to the felt board, geometry from
+   the editable constants.  v2: the printed 1000x1300 green board with twenty 5x5
+   markers at fixed positions.  Whichever dictionary yields >=4 identified markers wins,
+   with v2 preferred when both match.                                                */
+const BOARD_V2={
+  name:'綠板 v2（1000×1300）', mark:60.0, board:[1000,1300],
+  cleanOrigin:[100,100], cleanArea:[800,1100], inset:12,
+  centres:{"0": [57.0, 57.0], "1": [278.5, 57.0], "2": [500.0, 57.0], "3": [721.5, 57.0], "4": [943.0, 57.0], "5": [57.0, 254.7], "6": [943.0, 254.7], "7": [57.0, 452.3], "8": [943.0, 452.3], "9": [57.0, 650.0], "10": [943.0, 650.0], "11": [57.0, 847.7], "12": [943.0, 847.7], "13": [57.0, 1045.3], "14": [943.0, 1045.3], "15": [57.0, 1243.0], "16": [278.5, 1243.0], "17": [500.0, 1243.0], "18": [721.5, 1243.0], "19": [943.0, 1243.0]}
+};
+const BUILD='08-05 13:24';
 const DIAG={};
 function diagShow(){
   const rows=Object.entries(DIAG).map(([k,v])=>`<tr><td>${k}</td><td>${v}</td></tr>`).join('');
@@ -257,7 +267,8 @@ $('run').onclick=()=>{setTimeout(run,30);};
 
 /* ---------- ArUco (custom, opencv.js primitives only) ---------- */
 function popcount(x){let c=0;while(x){x&=x-1;c++}return c}
-function rot90(b){const o=new Array(16);for(let r=0;r<4;r++)for(let c=0;c<4;c++)o[c*4+(3-r)]=b[r*4+c];return o}
+function rot90(b){const n=Math.round(Math.sqrt(b.length)),o=new Array(b.length);
+ for(let r=0;r<n;r++)for(let c=0;c<n;c++)o[c*n+(n-1-r)]=b[r*n+c];return o}
 function bits2int(b){let v=0;for(const x of b)v=(v<<1)|x;return v>>>0}
 
 function detectMarkers(gray){
@@ -295,25 +306,33 @@ function detectMarkers(gray){
 function quadArea(q){let s=0;for(let k=0;k<4;k++){const a=q[k],b=q[(k+1)%4];s+=a[0]*b[1]-b[0]*a[1];}return Math.abs(s/2)}
 
 function identify(gray,q){
-  const N=48,CELL=8;
+  // try both marker families on the same quad: 4x4 (6 cells) then 5x5 (7 cells)
+  for(const [cells,dict,tag] of [[6,DICT,'4x4'],[7,DICT5,'5x5']]){
+    const r=identifyIn(gray,q,cells,dict);
+    if(r){r.fam=tag;return r}
+  }
+  return null;
+}
+function identifyIn(gray,q,cells,dict){
+  const CELL=8,N=cells*CELL;
   const src=cv.matFromArray(4,1,cv.CV_32FC2,[q[0][0],q[0][1],q[1][0],q[1][1],q[2][0],q[2][1],q[3][0],q[3][1]]);
   const dst=cv.matFromArray(4,1,cv.CV_32FC2,[0,0,N,0,N,N,0,N]);
   const M=cv.getPerspectiveTransform(src,dst), patch=new cv.Mat();
   cv.warpPerspective(gray,patch,M,new cv.Size(N,N),cv.INTER_NEAREST,cv.BORDER_CONSTANT,new cv.Scalar(0));
   const bin=new cv.Mat(); cv.threshold(patch,bin,0,255,cv.THRESH_BINARY+cv.THRESH_OTSU);
-  const cell=(r,c)=>{let s=0,n=0;
-    for(let y=r*CELL+2;y<(r+1)*CELL-2;y++)for(let x=c*CELL+2;x<(c+1)*CELL-2;x++){s+=bin.ucharPtr(y,x)[0]>127?1:0;n++}
-    return s/n>0.5?1:0};
+  const cell=(r,c)=>{let s2=0,n=0;
+    for(let y=r*CELL+2;y<(r+1)*CELL-2;y++)for(let x=c*CELL+2;x<(c+1)*CELL-2;x++){s2+=bin.ucharPtr(y,x)[0]>127?1:0;n++}
+    return s2/n>0.5?1:0};
   let border=0;
-  for(let k=0;k<6;k++){border+=cell(0,k)+cell(5,k)+cell(k,0)+cell(k,5)}
-  let b=[];for(let r=1;r<=4;r++)for(let c=1;c<=4;c++)b.push(cell(r,c));
+  for(let k=0;k<cells;k++){border+=cell(0,k)+cell(cells-1,k)+cell(k,0)+cell(k,cells-1)}
+  let b=[];for(let r=1;r<cells-1;r++)for(let c=1;c<cells-1;c++)b.push(cell(r,c));
   src.delete();dst.delete();M.delete();patch.delete();bin.delete();
   if(border>3) return null;                     // border must be black
   let best=null;
   for(let k=0;k<4;k++){
     const v=bits2int(b);
-    for(let id=0;id<DICT.length;id++){
-      const ham=popcount(v^DICT[id]);
+    for(let id=0;id<dict.length;id++){
+      const ham=popcount(v^dict[id]);
       if(ham<=1&&(!best||ham<best.ham)){
         const pts=[];for(let j=0;j<4;j++)pts.push(q[(j+k)%4]);
         best={id,pts,ham};
@@ -337,6 +356,23 @@ function W_(){return parseFloat($('cw').value)} function H_(){return parseFloat(
 function M_(){return parseFloat($('cm').value)}
 function worldTL(id){const W=W_(),H=H_();return [[0,0],[W,0],[0,H],[W,H]][id]}
 function worldPts(id){const m=M_(),[x,y]=worldTL(id);return [[x,y],[x+m,y],[x+m,y+m],[x,y+m]]}
+function resolveBoard(ms){
+  const v2=ms.filter(m=>m.fam==='5x5'&&BOARD_V2.centres[m.id]!==undefined);
+  if(v2.length>=4) return {kind:'v2',ms:v2,
+    mark:BOARD_V2.mark, size:BOARD_V2.board,
+    roi:[BOARD_V2.cleanOrigin[0]+BOARD_V2.inset, BOARD_V2.cleanOrigin[1]+BOARD_V2.inset,
+         BOARD_V2.cleanArea[0]-2*BOARD_V2.inset, BOARD_V2.cleanArea[1]-2*BOARD_V2.inset],
+    centre:id=>BOARD_V2.centres[id],
+    corners:id=>{const [cx,cy]=BOARD_V2.centres[id],h=BOARD_V2.mark/2;
+      return [[cx-h,cy-h],[cx+h,cy-h],[cx+h,cy+h],[cx-h,cy+h]]}};
+  const lg=ms.filter(m=>m.fam==='4x4'&&m.id<4);
+  if(lg.length>=4) return {kind:'legacy',ms:lg,
+    mark:M_(), size:[W_()+M_(),H_()+M_()],
+    roi:[M_(),M_(),W_()-M_(),H_()-M_()],
+    centre:id=>{const [x,y]=worldTL(id),m=M_();return [x+m/2,y+m/2]},
+    corners:id=>worldPts(id)};
+  return null;
+}
 
 function show(cid,mat){const c=$(cid);cv.imshow(c,mat);}
 
@@ -355,59 +391,59 @@ function run(){
   // --- aruco
   mark('aruco','run');
   let ms=detectMarkers(gray);
-  ms=ms.filter(m=>m.id<4);
-  if(ms.length<4){mark('aruco','err',`只找到 ${ms.length} 個 (${ms.map(m=>m.id).join(',')})，需要 4 個`);
-    $('q1').textContent=ms.map(m=>'ID'+m.id).join(' ')||'無';
-    DIAG['標記']=ms.map(m=>m.id).join(',')||'無'; diagShow();
+  const board=resolveBoard(ms);
+  if(!board){
+    mark('aruco','err',`可用標記不足（4x4:${ms.filter(m=>m.fam==='4x4').length}、5x5:${ms.filter(m=>m.fam==='5x5').length}），兩種板皆需至少 4 個`);
+    $('q1').textContent=ms.length+' 個'; DIAG['標記']=ms.map(m=>m.fam+'#'+m.id).join(',')||'無'; diagShow();
     sm.delete();gray.delete();return;}
-  try{ if(cv.cornerSubPix) refine(gray,ms); }catch(err){ console.warn('subpix skipped',err); }
-  mark('aruco','ok',`ID ${ms.map(m=>m.id).sort().join(', ')}`);
-  $('q1').textContent=ms.length+' / 4';
-  DIAG['分析尺寸']=`${gray.cols}×${gray.rows}`;
-  DIAG['標記']=ms.map(m=>m.id).sort().join(',');
+  ms=board.ms;
+  try{ if(cv.cornerSubPix) refine(gray,ms); }catch(err){}
+  mark('aruco','ok',`${board.kind==='v2'?BOARD_V2.name:'四角標記板'}・${ms.length} 個標記`);
+  $('q1').textContent=`${ms.length}（${board.kind}）`;
+  DIAG['板子']=board.kind; DIAG['分析尺寸']=`${gray.cols}×${gray.rows}`;
+  DIAG['標記']=ms.map(m=>m.id).sort((a,b)=>a-b).join(',');
+  $('cfg').style.display = board.kind==='legacy' ? '' : 'none';
 
-  // --- homography
+  // --- homography: coarse from centres (RANSAC when over-determined), then per-corner NN
   mark('homo','run');
-  // pass 1: coarse homography from the four marker CENTRES (rotation-agnostic)
   const cS=[],cD=[];
-  ms.forEach(m=>{const c=m.pts.reduce((a,p)=>[a[0]+p[0]/4,a[1]+p[1]/4],[0,0]);
-    const w=worldPts(m.id), wc=w.reduce((a,p)=>[a[0]+p[0]/4,a[1]+p[1]/4],[0,0]);
-    cS.push(c[0],c[1]); cD.push(wc[0]*P,wc[1]*P);});
-  const cSm=cv.matFromArray(4,1,cv.CV_32FC2,cS), cDm=cv.matFromArray(4,1,cv.CV_32FC2,cD);
-  const H0=cv.findHomography(cSm,cDm,0);
-  // pass 2: assign every corner to its nearest world corner under H0
+  ms.forEach(m=>{const c=m.pts.reduce((a2,p)=>[a2[0]+p[0]/4,a2[1]+p[1]/4],[0,0]);
+    const wc2=board.centre(m.id); cS.push(c[0],c[1]); cD.push(wc2[0]*P,wc2[1]*P);});
+  const cSm=cv.matFromArray(cS.length/2,1,cv.CV_32FC2,cS), cDm=cv.matFromArray(cD.length/2,1,cv.CV_32FC2,cD);
+  const H0=cv.findHomography(cSm,cDm, ms.length>4?cv.RANSAC:0, 40);
   const S=[],D=[];
   ms.forEach(m=>{
-    const w=worldPts(m.id).map(p=>[p[0]*P,p[1]*P]);
+    const w=board.corners(m.id).map(p=>[p[0]*P,p[1]*P]);
     const q=cv.matFromArray(4,1,cv.CV_32FC2,m.pts.flat()), pw=new cv.Mat();
     cv.perspectiveTransform(q,pw,H0);
     const used=[];
     for(let k=0;k<4;k++){
       const px=pw.data32F[k*2],py=pw.data32F[k*2+1];
-      let bi=-1,bd=1e18;
+      let bi=-1,bd2=1e18;
       for(let j=0;j<4;j++){if(used.includes(j))continue;
-        const d=(w[j][0]-px)**2+(w[j][1]-py)**2; if(d<bd){bd=d;bi=j}}
+        const d=(w[j][0]-px)**2+(w[j][1]-py)**2; if(d<bd2){bd2=d;bi=j}}
       used.push(bi); S.push(m.pts[k][0],m.pts[k][1]); D.push(w[bi][0],w[bi][1]);
     }
     q.delete();pw.delete();});
   cSm.delete();cDm.delete();H0.delete();
   const sMat=cv.matFromArray(S.length/2,1,cv.CV_32FC2,S), dMat=cv.matFromArray(D.length/2,1,cv.CV_32FC2,D);
-  const Hm=cv.findHomography(sMat,dMat,0);   // correspondences already verified -> least squares
+  const Hm=cv.findHomography(sMat,dMat, ms.length>4?cv.RANSAC:0, 6);
   const back=new cv.Mat(); cv.perspectiveTransform(dMat,back,invMat(Hm));
   const res=[];for(let i=0;i<S.length/2;i++)res.push(Math.hypot(back.data32F[i*2]-S[i*2],back.data32F[i*2+1]-S[i*2+1]));
-  let e=res.reduce((a,b)=>a+b,0)/res.length; back.delete();
+  let e=res.reduce((a2,b2)=>a2+b2,0)/res.length; back.delete();
   $('q2').textContent=e.toFixed(2)+' px';
   DIAG['Reprojection error']=e.toFixed(2)+' px';
-  mark(e<3?'homo':'homo',e<3?'ok':'err',e<3?`誤差 ${e.toFixed(2)} px`:`誤差過大 ${e.toFixed(2)} px — 檢查 W/H/m 常數`);
-  const CW=Math.round((W_()+M_())*P), CH=Math.round((H_()+M_())*P);
-  const rect=new cv.Mat(); cv.warpPerspective(sMat?sm:sm,rect,Hm,new cv.Size(CW,CH));
+  mark('homo',e<3?'ok':'err',e<3?`誤差 ${e.toFixed(2)} px`:`誤差過大 ${e.toFixed(2)} px — 檢查板面設定`);
+  const CW=Math.round(board.size[0]*P), CH=Math.round(board.size[1]*P);
+  const rect=new cv.Mat(); cv.warpPerspective(sm,rect,Hm,new cv.Size(CW,CH));
   sMat.delete();dMat.delete();Hm.delete();sm.delete();gray.delete();
   show('c1',rect);
+  ST_ROI=board.roi;
 
-  // --- segment inside marker rectangle
+  // --- segment inside the board's clean area
   mark('seg','run');
-  const m=M_();
-  const roiRect=new cv.Rect(Math.round(m*P),Math.round(m*P),Math.round((W_()-m)*P),Math.round((H_()-m)*P));
+  const roiRect=new cv.Rect(Math.round(ST_ROI[0]*P),Math.round(ST_ROI[1]*P),
+                            Math.round(ST_ROI[2]*P),Math.round(ST_ROI[3]*P));
   const roi=rect.roi(roiRect).clone();
   const segR=segment(roi);
   if(!segR.mask){
@@ -1139,7 +1175,7 @@ $('kget').onclick=()=>window.open('https://aistudio.google.com/apikey','_blank')
 syncKeyUI();
 
 /* ---------- vision model ---------- */
-let TAGB64=null;
+let TAGB64=null,ST_ROI=null;
 $('tagfi').onchange=e=>{const f=e.target.files[0];if(!f)return;
   shrink(f,1024).then(b=>{TAGB64=b;$('taglabel').textContent='✓ 已加入領標照片（點此更換）'})};
 function shrink(file,max){
