@@ -61,7 +61,7 @@ td{padding:4px 0;border-bottom:1px solid var(--line)}td:last-child{text-align:ri
 <header>
   <div class="grow"><h1>衣物尺寸量測</h1>
   <div class="sub">ArUco 校正 → 分割去背 → 尺寸量測 → AI 命名　<span id="build"
-    style="opacity:.55">build 08-06 02:20</span></div></div>
+    style="opacity:.55">build 08-06 23:10</span></div></div>
   <button id="gear" title="設定 AI 金鑰">⚙</button>
 </header>
 
@@ -167,6 +167,7 @@ td{padding:4px 0;border-bottom:1px solid var(--line)}td:last-child{text-align:ri
   </div>
 
   <div class="title-box" id="title">—</div>
+  <div class="hint" style="margin-top:4px;text-align:right"><span id="titlecnt">—</span>　蝦皮上限 60 字，前 15 字為手機列表可見區</div>
   <div class="hint" style="margin-top:6px">檔名：<span id="fpreview" style="color:var(--fg)">—</span></div>
   <div class="row" style="margin-top:10px">
     <button class="sec" id="copy">複製標題</button>
@@ -206,7 +207,7 @@ const BOARD_V2={
   cleanOrigin:[100,100], cleanArea:[800,1100], inset:12,
   centres:{"0": [57.0, 57.0], "1": [278.5, 57.0], "2": [500.0, 57.0], "3": [721.5, 57.0], "4": [943.0, 57.0], "5": [57.0, 254.7], "6": [943.0, 254.7], "7": [57.0, 452.3], "8": [943.0, 452.3], "9": [57.0, 650.0], "10": [943.0, 650.0], "11": [57.0, 847.7], "12": [943.0, 847.7], "13": [57.0, 1045.3], "14": [943.0, 1045.3], "15": [57.0, 1243.0], "16": [278.5, 1243.0], "17": [500.0, 1243.0], "18": [721.5, 1243.0], "19": [943.0, 1243.0]}
 };
-const BUILD='08-06 02:20';
+const BUILD='08-06 23:10';
 const DIAG={};
 function diagShow(){
   const rows=Object.entries(DIAG).map(([k,v])=>`<tr><td>${k}</td><td>${v}</td></tr>`).join('');
@@ -1172,17 +1173,52 @@ function buildDesc(){
   L.push('※ 實品顏色以拍攝環境為準，可能與螢幕顯示略有差異');
   $('desc').textContent=L.join('\n');
 }
+/* Shopee TW allows 60 chars; the first ~15 are what shows in the mobile list, and
+   titles under ~50 chars rank worse for "thin content".  So: assemble tokens in
+   search-value order, keep the must-see ones up front, drop from the tail when over
+   60, and pad with genuine synonym keywords when under 50.                        */
+const tlen=t=>[...t].length;
 function buildTitle(){
-  const parts=[
-    F('f_brand'), F('f_gender'), F('f_cat'),
-    [F('f_color'),F('f_pattern')].filter(Boolean).join(''),
-    F('f_size')?F('f_size')+'號':'',
-    F('f_height')?'適穿'+F('f_height'):'',
-    F('f_fit')==='標準'?'':F('f_fit'),
-    F('f_style'), F('f_mat'), '二手'
+  const kid=(F('f_size')||'').startsWith('童');
+  const gd=F('f_gender');
+  // primary tokens, front to back by search value
+  const head=[
+    F('f_brand'),
+    gd,
+    F('f_cat'),
+    F('f_size') ? (kid ? F('f_size').replace('童','')+'cm' : F('f_size')+'號') : '',
+    [F('f_color'),F('f_pattern')].filter(Boolean).join('')
   ].filter(Boolean);
-  const t=parts.join(' ');
+  // secondary tokens, droppable from the end
+  const mat=F('f_mat');
+  const matKw = /棉/.test(mat) ? (/9[5-9]|100/.test(mat)?'純棉':'棉質')
+              : /聚酯|尼龍|機能/.test(mat) ? '機能快乾' : '';
+  const tail=[
+    F('f_height') ? '適穿'+F('f_height') : '',
+    F('f_fit')==='標準' ? '' : F('f_fit'),
+    F('f_style'),
+    matKw,
+    '二手'
+  ].filter(Boolean);
+  // synonym fillers, only added while room remains (real search terms, not stuffing)
+  const fill=[];
+  if(kid) fill.push('童裝','兒童');
+  if(/T恤/.test(F('f_cat'))) fill.push('短T','上衣');
+  if(/短褲/.test(F('f_cat'))) fill.push('休閒褲');
+  if(/襯衫/.test(F('f_cat'))) fill.push('上衣');
+
+  let toks=[...head,...tail];
+  const join=a=>a.join(' ');
+  while(tlen(join(toks))>60 && toks.length>head.length) toks.splice(toks.length-2,1); // keep 二手 last
+  while(tlen(join(toks))>60 && toks.length>1) toks.pop();
+  for(const f of fill){
+    if(tlen(join([...toks,f]))<=58 && !toks.some(t2=>t2.includes(f))) toks.push(f);
+  }
+  const t=join(toks);
   $('title').textContent=t;
+  const n=tlen(t);
+  const cnt=$('titlecnt'); if(cnt){cnt.textContent=`${n} / 60 字`;
+    cnt.style.color = n>60?'var(--err)': n>=45?'var(--ok)':'var(--warn)';}
   refreshName();
   try{buildDesc()}catch(e){}
   return t;
@@ -1280,7 +1316,7 @@ ${ST.R.type==='top'
 
 各欄位要求：
 - brand：品牌英文原名（如 adidas、UNIQLO）。看不出來就回空字串，不要猜。
-- gender：男款 / 女款 / 中性 / 童裝，擇一。
+- gender：成人衣物填 男款 / 女款 / 中性；童裝依設計填 男童 / 女童 / 中性童裝。
 - category：具體品類，如 短袖T恤、長袖上衣、連帽外套、襯衫、短褲、休閒長褲、牛仔褲、運動褲。
 - pattern：圖樣特徵，簡短 6 字內，如 素色、印字LOGO、滿版印花、橫條紋。
 - style：風格或適合場合，簡短 6 字內，如 運動休閒、日系復古、正式上班、街頭潮流。
