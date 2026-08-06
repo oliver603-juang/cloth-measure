@@ -61,7 +61,7 @@ td{padding:4px 0;border-bottom:1px solid var(--line)}td:last-child{text-align:ri
 <header>
   <div class="grow"><h1>衣物尺寸量測</h1>
   <div class="sub">ArUco 校正 → 分割去背 → 尺寸量測 → AI 命名　<span id="build"
-    style="opacity:.55">build 08-05 13:24</span></div></div>
+    style="opacity:.55">build 08-06 02:20</span></div></div>
   <button id="gear" title="設定 AI 金鑰">⚙</button>
 </header>
 
@@ -136,9 +136,9 @@ td{padding:4px 0;border-bottom:1px solid var(--line)}td:last-child{text-align:ri
   <b style="font-size:13px">商品命名</b>
   <div class="hint" style="margin-top:4px">尺碼、身高、版型、品類、主色由量測結果自動推導；品牌與風格可用 AI 從照片辨識。</div>
 
-  <label class="file" style="margin-top:10px;padding:14px"><input type="file" id="tagfi" accept="image/*">
-    <b id="taglabel" style="font-size:14px">＋ 加拍領標照片（選填）</b>
-    <div class="hint" style="margin-top:4px">有領標時品牌與材質辨識率高很多</div>
+  <label class="file" style="margin-top:10px;padding:14px"><input type="file" id="tagfi" accept="image/*" multiple>
+    <b id="taglabel" style="font-size:14px">＋ 加拍標籤照片（可多張，選填）</b>
+    <div class="hint" style="margin-top:4px">品牌標、洗標、成分標各拍一張，AI 會逐字轉錄</div>
   </label>
 
   <div class="row" style="margin-top:10px">
@@ -159,11 +159,20 @@ td{padding:4px 0;border-bottom:1px solid var(--line)}td:last-child{text-align:ri
     <div class="wide"><label>材質</label><input id="f_mat" placeholder="聚酯纖維"></div>
   </div>
 
+  <div class="fields" style="margin-top:8px">
+    <div><label>產地</label><input id="f_origin" placeholder="台灣製"></div>
+    <div><label>製造商 / 公司</label><input id="f_maker" placeholder="麗嬰房股份有限公司"></div>
+    <div class="wide"><label>洗滌說明</label><input id="f_care" placeholder="冷水機洗、不可漂白、不可烘乾、陰乾、低溫熨燙"></div>
+    <div class="wide"><label>瑕疵 / 狀況（自填）</label><input id="f_cond" placeholder="例：前襟有淡漬（見圖）、九成新"></div>
+  </div>
+
   <div class="title-box" id="title">—</div>
   <div class="hint" style="margin-top:6px">檔名：<span id="fpreview" style="color:var(--fg)">—</span></div>
   <div class="row" style="margin-top:10px">
     <button class="sec" id="copy">複製標題</button>
+    <button class="sec" id="copydesc">複製商品描述</button>
   </div>
+  <div class="title-box" id="desc" style="margin-top:10px;white-space:pre-wrap;font-size:13.5px;line-height:1.65">—</div>
 </div>
 
 <div class="card" id="diagcard" style="display:none">
@@ -197,7 +206,7 @@ const BOARD_V2={
   cleanOrigin:[100,100], cleanArea:[800,1100], inset:12,
   centres:{"0": [57.0, 57.0], "1": [278.5, 57.0], "2": [500.0, 57.0], "3": [721.5, 57.0], "4": [943.0, 57.0], "5": [57.0, 254.7], "6": [943.0, 254.7], "7": [57.0, 452.3], "8": [943.0, 452.3], "9": [57.0, 650.0], "10": [943.0, 650.0], "11": [57.0, 847.7], "12": [943.0, 847.7], "13": [57.0, 1045.3], "14": [943.0, 1045.3], "15": [57.0, 1243.0], "16": [278.5, 1243.0], "17": [500.0, 1243.0], "18": [721.5, 1243.0], "19": [943.0, 1243.0]}
 };
-const BUILD='08-05 13:24';
+const BUILD='08-06 02:20';
 const DIAG={};
 function diagShow(){
   const rows=Object.entries(DIAG).map(([k,v])=>`<tr><td>${k}</td><td>${v}</td></tr>`).join('');
@@ -1101,6 +1110,9 @@ function meanColour(){
 }
 const SIZES_TOP=[[44,'S','160-170'],[47.5,'M','165-175'],[51.5,'L','170-180'],
                  [55,'XL','175-185'],[999,'2XL','180-190']];
+const SIZES_KID=[[27,'童80','75-85'],[29,'童90','85-95'],[31,'童100','95-105'],
+                 [33,'童110','105-115'],[35,'童120','115-125'],[37,'童130','125-135'],
+                 [39,'童140','135-145'],[42,'童150','145-155']];
 const SIZES_BOT=[[36,'S','66-72'],[39,'M','72-78'],[42,'L','78-84'],
                  [45,'XL','84-90'],[999,'2XL','90-96']];
 function derive(){
@@ -1114,7 +1126,10 @@ function derive(){
     return {size:sz[1],height:sz[2],fit,cat,colour:meanColour()};
   }
   const chest=measured('chest')/10, span=R.prof[R._ymax];
-  const sz=SIZES_TOP.find(s=>chest<s[0]);
+  // a grown-up XS still has a ~44cm chest; anything clearly below that is kidswear,
+  // where "fits height 160-170" would be nonsense
+  const kid = chest<42 && len<58;
+  const sz=(kid?SIZES_KID:SIZES_TOP).find(s=>chest<s[0]) || SIZES_TOP[0];
   const ratio=chest*2/len;
   const fit = ratio<1.45?'合身':ratio<1.62?'標準':ratio<1.78?'寬鬆':'Oversize';
   const sr = span/(chest*10);
@@ -1131,6 +1146,32 @@ function fillDerived(){
 
 /* ---------- title ---------- */
 const F=id=>($(id).value||'').trim();
+function buildDesc(){
+  const d=derive(), isTop=ST.R&&ST.R.type==='top';
+  const meas = isTop
+    ? [['衣長','vL'],['胸寬(腋下平量)','vC'],['肩寬','vS'],['下擺','vW']]
+    : [['褲長','vL'],['腰寬(平量)','vC'],['股上','vS'],['褲口','vW']];
+  const L=[];
+  L.push($('title').textContent);
+  L.push('');
+  L.push('【實測尺寸】平鋪量測，單位公分');
+  meas.forEach(([n,id])=>L.push(`▪ ${n}：${$(id).textContent} cm`));
+  if(F('f_height')) L.push(`▪ 建議${isTop?'身高':'腰圍'}：${F('f_height')}${isTop?' cm（依胸寬推估，請以尺寸為準）':' cm'}`);
+  L.push('');
+  L.push('【商品資訊】');
+  if(F('f_brand'))  L.push(`▪ 品牌：${F('f_brand')}`);
+  if(F('f_cat'))    L.push(`▪ 品項：${[F('f_gender'),F('f_color'),F('f_pattern'),F('f_cat')].filter(Boolean).join(' ')}`);
+  if(F('f_size'))   L.push(`▪ 尺碼：${F('f_size')}`);
+  if(F('f_mat'))    L.push(`▪ 成分：${F('f_mat')}`);
+  if(F('f_origin')) L.push(`▪ 產地：${F('f_origin')}`);
+  if(F('f_maker'))  L.push(`▪ 製造商：${F('f_maker')}`);
+  if(F('f_care')){ L.push(''); L.push('【洗滌方式】（依洗標）'); L.push('▪ '+F('f_care').split(/[、,，;；]/).filter(Boolean).join('\n▪ ')); }
+  if(F('f_cond')){ L.push(''); L.push('【商品狀況】'); L.push('▪ '+F('f_cond')); }
+  L.push('');
+  L.push('※ 二手商品，尺寸為平鋪手工/演算法量測，容許 ±1cm 誤差');
+  L.push('※ 實品顏色以拍攝環境為準，可能與螢幕顯示略有差異');
+  $('desc').textContent=L.join('\n');
+}
 function buildTitle(){
   const parts=[
     F('f_brand'), F('f_gender'), F('f_cat'),
@@ -1143,6 +1184,7 @@ function buildTitle(){
   const t=parts.join(' ');
   $('title').textContent=t;
   refreshName();
+  try{buildDesc()}catch(e){}
   return t;
 }
 document.querySelectorAll('.fields input').forEach(el=>el.oninput=buildTitle);
@@ -1156,6 +1198,8 @@ function autoName(){                    // compact: identity + sizes, not the wh
 function refreshName(){ $('fpreview').textContent=autoName()+'_商品.jpg　/　…_尺寸.jpg' }
 $('copy').onclick=()=>{navigator.clipboard.writeText($('title').textContent)
   .then(()=>{$('copy').textContent='已複製 ✓';setTimeout(()=>$('copy').textContent='複製標題',1400)})};
+$('copydesc').onclick=()=>{navigator.clipboard.writeText($('desc').textContent)
+  .then(()=>{$('copydesc').textContent='已複製 ✓';setTimeout(()=>$('copydesc').textContent='複製商品描述',1400)})};
 
 /* ---------- BYOK settings ---------- */
 const LS={key:'cm_apikey',model:'cm_model'};
@@ -1175,9 +1219,10 @@ $('kget').onclick=()=>window.open('https://aistudio.google.com/apikey','_blank')
 syncKeyUI();
 
 /* ---------- vision model ---------- */
-let TAGB64=null,ST_ROI=null;
-$('tagfi').onchange=e=>{const f=e.target.files[0];if(!f)return;
-  shrink(f,1024).then(b=>{TAGB64=b;$('taglabel').textContent='✓ 已加入領標照片（點此更換）'})};
+let TAGS=[],ST_ROI=null;
+$('tagfi').onchange=e=>{const fs=[...e.target.files];if(!fs.length)return;
+  Promise.all(fs.map(f=>shrink(f,1024))).then(bs=>{TAGS=bs;
+    $('taglabel').textContent=`✓ 已加入 ${bs.length} 張標籤照片（點此重選）`})};
 function shrink(file,max){
   return createImageBitmap(file,{imageOrientation:'from-image'}).then(bm=>{
     const s=Math.min(1,max/Math.max(bm.width,bm.height));
@@ -1197,7 +1242,9 @@ function canvasB64(cv2,max){
 const SCHEMA={type:'object',properties:{
   brand:{type:'string'},gender:{type:'string'},category:{type:'string'},
   pattern:{type:'string'},style:{type:'string'},material:{type:'string'},
-  notes:{type:'string'}},required:['brand','gender','category','pattern','style','material']};
+  origin:{type:'string'},maker:{type:'string'},care:{type:'string'},
+  notes:{type:'string'}},
+  required:['brand','gender','category','pattern','style','material','origin','maker','care']};
 
 const MODELS=[getModel(),'gemini-3.6-flash','gemini-3.5-flash-lite','gemini-2.5-flash'];
 async function askModel(parts){
@@ -1237,17 +1284,22 @@ ${ST.R.type==='top'
 - category：具體品類，如 短袖T恤、長袖上衣、連帽外套、襯衫、短褲、休閒長褲、牛仔褲、運動褲。
 - pattern：圖樣特徵，簡短 6 字內，如 素色、印字LOGO、滿版印花、橫條紋。
 - style：風格或適合場合，簡短 6 字內，如 運動休閒、日系復古、正式上班、街頭潮流。
-- material：材質，看得到洗標才填（如 聚酯纖維、純棉），否則空字串。
-- notes：其他值得寫進商品描述的特徵，一句話。
+- material：成分，照標籤逐字轉錄並轉為繁體中文（如 98% 棉 2% 尼龍）；沒有標籤照就留空。
+- origin：產地，照標籤（如 台灣製、中國製）；看不到留空。
+- maker：標籤上的公司或製造商名稱，逐字轉錄；沒有留空。
+- care：洗滌重點，從洗標整理成頓號分隔的短句（如 30°C輕柔機洗、不可漂白、不可烘乾、懸掛陰乾、低溫熨燙）；沒有洗標留空。
+- notes：其他值得寫進商品描述的特徵（如 COTTON USA 認證），一句話。
 
 全部用繁體中文，品牌保留英文原名。不確定的欄位一律回空字串。`;
   const parts=[{text:prompt},{inline_data:{mime_type:'image/jpeg',data:canvasB64(plainCanvas(),900)}}];
-  if(TAGB64) parts.push({text:'以下是領標／洗標照片：'},{inline_data:{mime_type:'image/jpeg',data:TAGB64}});
+  if(TAGS.length){parts.push({text:'以下是標籤照片（品牌標／成分標／洗標），請逐字轉錄：'});
+    TAGS.forEach(b64=>parts.push({inline_data:{mime_type:'image/jpeg',data:b64}}));}
   try{
     const {data,model}=await askModel(parts);
     const put=(id,v)=>{ if(v&&v.trim()) $(id).value=v.trim() };
     put('f_brand',data.brand); put('f_gender',data.gender); put('f_cat',data.category);
     put('f_pattern',data.pattern); put('f_style',data.style); put('f_mat',data.material);
+    put('f_origin',data.origin); put('f_maker',data.maker); put('f_care',data.care);
     buildTitle();
     $('aistate').innerHTML=`<span style="color:var(--ok)">✓ 完成（${model}）</span>`+
       (data.notes?`　${data.notes}`:'');
