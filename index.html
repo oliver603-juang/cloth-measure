@@ -61,7 +61,7 @@ td{padding:4px 0;border-bottom:1px solid var(--line)}td:last-child{text-align:ri
 <header>
   <div class="grow"><h1>衣物尺寸量測</h1>
   <div class="sub">ArUco 校正 → 分割去背 → 尺寸量測 → AI 命名　<span id="build"
-    style="opacity:.55">build 08-06 23:10</span></div></div>
+    style="opacity:.55">build 08-06 23:51</span></div></div>
   <button id="gear" title="設定 AI 金鑰">⚙</button>
 </header>
 
@@ -173,6 +173,11 @@ td{padding:4px 0;border-bottom:1px solid var(--line)}td:last-child{text-align:ri
     <button class="sec" id="copy">複製標題</button>
     <button class="sec" id="copydesc">複製商品描述</button>
   </div>
+  <div class="row" style="margin-top:8px">
+    <button id="sharepack">一鍵分享整組（2 圖 + 文字檔）</button>
+  </div>
+  <div class="hint" style="margin-top:5px">手機上會開啟分享選單，選 Google 雲端硬碟丟進「待上架」資料夾；
+  筆電再從 Drive 拖圖上傳、開 txt 複製文字。不支援分享時會改為逐一下載。</div>
   <div class="title-box" id="desc" style="margin-top:10px;white-space:pre-wrap;font-size:13.5px;line-height:1.65">—</div>
 </div>
 
@@ -207,7 +212,7 @@ const BOARD_V2={
   cleanOrigin:[100,100], cleanArea:[800,1100], inset:12,
   centres:{"0": [57.0, 57.0], "1": [278.5, 57.0], "2": [500.0, 57.0], "3": [721.5, 57.0], "4": [943.0, 57.0], "5": [57.0, 254.7], "6": [943.0, 254.7], "7": [57.0, 452.3], "8": [943.0, 452.3], "9": [57.0, 650.0], "10": [943.0, 650.0], "11": [57.0, 847.7], "12": [943.0, 847.7], "13": [57.0, 1045.3], "14": [943.0, 1045.3], "15": [57.0, 1243.0], "16": [278.5, 1243.0], "17": [500.0, 1243.0], "18": [721.5, 1243.0], "19": [943.0, 1243.0]}
 };
-const BUILD='08-06 23:10';
+const BUILD='08-06 23:51';
 const DIAG={};
 function diagShow(){
   const rows=Object.entries(DIAG).map(([k,v])=>`<tr><td>${k}</td><td>${v}</td></tr>`).join('');
@@ -1234,6 +1239,27 @@ function autoName(){                    // compact: identity + sizes, not the wh
 function refreshName(){ $('fpreview').textContent=autoName()+'_商品.jpg　/　…_尺寸.jpg' }
 $('copy').onclick=()=>{navigator.clipboard.writeText($('title').textContent)
   .then(()=>{$('copy').textContent='已複製 ✓';setTimeout(()=>$('copy').textContent='複製標題',1400)})};
+function canvasBlob(cv2){return new Promise(r=>cv2.toBlob(r,'image/jpeg',0.92))}
+$('sharepack').onclick=async()=>{
+  const base=autoName();
+  const txt=$('title').textContent+'\n\n'+$('desc').textContent;
+  const files=[
+    new File([await canvasBlob(plainCanvas())],base+'_商品.jpg',{type:'image/jpeg'}),
+    new File([await canvasBlob($('ov'))],      base+'_尺寸.jpg',{type:'image/jpeg'}),
+    new File([new Blob([txt],{type:'text/plain'})],base+'_標題描述.txt',{type:'text/plain'})
+  ];
+  if(navigator.canShare && navigator.canShare({files})){
+    try{ await navigator.share({files, title:$('title').textContent}); return }
+    catch(e){ if(e.name==='AbortError') return }   // user closed the sheet — not an error
+  }
+  // desktop / unsupported: download the three files one by one
+  for(const f of files){
+    const a=document.createElement('a');
+    a.download=f.name; a.href=URL.createObjectURL(f);
+    document.body.appendChild(a); a.click(); a.remove();
+    await new Promise(r=>setTimeout(r,400)); URL.revokeObjectURL(a.href);
+  }
+};
 $('copydesc').onclick=()=>{navigator.clipboard.writeText($('desc').textContent)
   .then(()=>{$('copydesc').textContent='已複製 ✓';setTimeout(()=>$('copydesc').textContent='複製商品描述',1400)})};
 
