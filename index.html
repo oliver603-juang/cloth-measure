@@ -4,6 +4,10 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <title>衣物尺寸量測 — 演算法驗證</title>
+<link rel="manifest" href="manifest.webmanifest">
+<meta name="theme-color" content="#0f1115">
+<link rel="apple-touch-icon" href="icon-192.png">
+<link rel="icon" type="image/png" href="icon-192.png">
 <style>
 :root{--bg:#0f1115;--panel:#181b22;--line:#2a2f3a;--fg:#e6e8ec;--dim:#9aa3b2;--acc:#4ea1ff;--ok:#3ddc97;--warn:#ffb454;--err:#ff6b6b}
 *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
@@ -61,7 +65,7 @@ td{padding:4px 0;border-bottom:1px solid var(--line)}td:last-child{text-align:ri
 <header>
   <div class="grow"><h1>衣物尺寸量測</h1>
   <div class="sub">ArUco 校正 → 分割去背 → 尺寸量測 → AI 命名　<span id="build"
-    style="opacity:.55">build 09-14 item</span></div></div>
+    style="opacity:.55">build 09-14 pwa</span></div></div>
   <button id="gear" title="設定 AI 金鑰">⚙</button>
 </header>
 
@@ -260,6 +264,14 @@ function loadCv(i){
   document.head.appendChild(el);
 }
 loadCv(0);
+
+/* PWA: 只在 https 註冊（本機測試不攔截）。index.html 走網路優先，離線才用快取，
+   不會再出現「手機跑到舊版」的問題；opencv.js 走快取優先（版本固定）。 */
+if('serviceWorker' in navigator && location.protocol==='https:'){
+  addEventListener('load',()=>navigator.serviceWorker.register('./sw.js')
+    .then(r=>{DIAG['PWA']='Service Worker 已註冊'})
+    .catch(e=>{DIAG['PWA']='SW 註冊失敗：'+e.message}));
+}
 
 $('fi').onchange=e=>{const f=e.target.files[0];if(!f)return;
  // decode straight into a canvas and hand that to cv.imread.  The old path went through
