@@ -61,7 +61,7 @@ td{padding:4px 0;border-bottom:1px solid var(--line)}td:last-child{text-align:ri
 <header>
   <div class="grow"><h1>衣物尺寸量測</h1>
   <div class="sub">ArUco 校正 → 分割去背 → 尺寸量測 → AI 命名　<span id="build"
-    style="opacity:.55">build 08-06 23:51</span></div></div>
+    style="opacity:.55">build 09-14 item</span></div></div>
   <button id="gear" title="設定 AI 金鑰">⚙</button>
 </header>
 
@@ -116,6 +116,7 @@ td{padding:4px 0;border-bottom:1px solid var(--line)}td:last-child{text-align:ri
   <div class="row" style="gap:6px;margin-bottom:10px">
     <button class="sec" id="tTop" style="padding:8px;font-size:13px">上衣</button>
     <button class="sec" id="tBot" style="padding:8px;font-size:13px">下著</button>
+    <button class="sec" id="tItem" style="padding:8px;font-size:13px">物品</button>
   </div>
   <div class="hint" style="margin:-4px 0 10px" id="tHint"></div>
   <div class="res">
@@ -475,8 +476,8 @@ function run(){
 
   // --- upright by mirror symmetry
   mark('up','run');
-  let {up,upColor,ang,iou}=upright(mask,roi);
-  const cls=classify(up);
+  let {up,upColor,ang,iou}=(TYPE_FORCED==='item')?itemUpright(mask,roi):upright(mask,roi);
+  const cls=classify(up,TYPE_FORCED);
   if(cls.flip){cv.flip(up,up,-1);cv.flip(upColor,upColor,-1);ang+=180}
   $('q3').textContent=ang.toFixed(1)+'°'; $('q4').textContent=iou.toFixed(3);
   DIAG['轉正角度 / 對稱 IoU']=`${ang.toFixed(1)}° / ${iou.toFixed(3)}`;
@@ -491,7 +492,7 @@ function run(){
   const R=measure(up,TYPE_FORCED);
   drawProfile(R);
   ST={up,upColor,R,rect,mask,ang};
-  mark('meas','ok',`${R.type==='top'?'上衣':'下著'}・共 ${(performance.now()-t0|0)} ms`);
+  mark('meas','ok',`${R.type==='top'?'上衣':R.type==='bottom'?'下著':'物品'}・共 ${(performance.now()-t0|0)} ms`);
   $('rcard').style.display='';$('ncard').style.display='';
   ST.cls=cls;
   DIAG['耗時']=`${(performance.now()-t0|0)} ms`;
@@ -576,29 +577,46 @@ function bgDistanceMask(roi){
   cv.GaussianBlur(rgb,rgb,new cv.Size(7,7),0);
   const lab8=new cv.Mat(); cv.cvtColor(rgb,lab8,cv.COLOR_RGB2Lab); rgb.delete();
   const lab32=new cv.Mat(); lab8.convertTo(lab32,cv.CV_32F); lab8.delete();
-  // border band = background sample
+  // border band = background sample.  The band starts a little inside the ROI edge:
+  // with the v2 board the white marker tiles end barely 1 mm outside the clean area,
+  // so homography residuals can bleed them in and poison the colour model.
+  const off=Math.round(Math.min(h,w)*0.02)+Math.round(10*P);
   const band=Math.round(Math.min(h,w)*0.05);
   const bm=new cv.Mat.zeros(h,w,cv.CV_8U);
-  cv.rectangle(bm,new cv.Point(0,0),new cv.Point(w-1,h-1),new cv.Scalar(255),-1);
-  cv.rectangle(bm,new cv.Point(band,band),new cv.Point(w-1-band,h-1-band),new cv.Scalar(0),-1);
+  cv.rectangle(bm,new cv.Point(off,off),new cv.Point(w-1-off,h-1-off),new cv.Scalar(255),-1);
+  cv.rectangle(bm,new cv.Point(off+band,off+band),new cv.Point(w-1-off-band,h-1-off-band),new cv.Scalar(0),-1);
   const ch=new cv.MatVector(); cv.split(lab32,ch); lab32.delete();
   const C=[ch.get(0),ch.get(1),ch.get(2)];
-  const mu=C.map(c=>cv.mean(c,bm)[0]);
   const t=new cv.Mat();
-  const cov=[];
-  for(const [i,j] of [[0,0],[0,1],[0,2],[1,1],[1,2],[2,2]]){
-    cv.multiply(C[i],C[j],t);
-    cov.push(cv.mean(t,bm)[0]-mu[i]*mu[j]);
-  }
-  cov[0]+=1e-3; cov[3]+=1e-3; cov[5]+=1e-3;      // ridge, keeps it invertible
-  const iv=inv3(cov);
-  C.forEach((c,i)=>c.convertTo(c,cv.CV_32F,1,-mu[i]));   // in place: d_i = ch_i - mu_i
-  const acc=new cv.Mat.zeros(h,w,cv.CV_32F);
-  const term=(i,j,k)=>{cv.multiply(C[i],C[j],t);cv.addWeighted(acc,1,t,k,0,acc)};
-  term(0,0,iv[0]); term(1,1,iv[3]); term(2,2,iv[5]);
-  term(0,1,2*iv[1]); term(0,2,2*iv[2]); term(1,2,2*iv[4]);
+  const distTo=(sampleMask)=>{           // Mahalanobis distance map to sampleMask's colours
+    const mu=C.map(c=>cv.mean(c,sampleMask)[0]);
+    const cov=[];
+    for(const [i,j] of [[0,0],[0,1],[0,2],[1,1],[1,2],[2,2]]){
+      cv.multiply(C[i],C[j],t);
+      cov.push(cv.mean(t,sampleMask)[0]-mu[i]*mu[j]);
+    }
+    cov[0]+=1e-3; cov[3]+=1e-3; cov[5]+=1e-3;    // ridge, keeps it invertible
+    const iv=inv3(cov);
+    const D=C.map((c,i)=>{const d=new cv.Mat();c.convertTo(d,cv.CV_32F,1,-mu[i]);return d});
+    const acc=new cv.Mat.zeros(h,w,cv.CV_32F);
+    const term=(i,j,k)=>{cv.multiply(D[i],D[j],t);cv.addWeighted(acc,1,t,k,0,acc)};
+    term(0,0,iv[0]); term(1,1,iv[3]); term(2,2,iv[5]);
+    term(0,1,2*iv[1]); term(0,2,2*iv[2]); term(1,2,2*iv[4]);
+    D.forEach(d=>d.delete());
+    cv.sqrt(acc,acc);
+    return acc;
+  };
+  // pass 1: whole band.  pass 2: drop band pixels that pass 1 says are outliers
+  // (an intruding marker tile, a garment corner) and re-model on the rest.
+  let acc=distTo(bm);
+  const good=new cv.Mat(); cv.threshold(acc,good,3.0,255,cv.THRESH_BINARY_INV);
+  const good8=new cv.Mat(); good.convertTo(good8,cv.CV_8U); good.delete();
+  const bm2=new cv.Mat(); cv.bitwise_and(bm,good8,bm2); good8.delete();
+  const nb=cv.countNonZero(bm), n2=cv.countNonZero(bm2);
+  if(n2>nb*0.25){ acc.delete(); acc=distTo(bm2); DIAG['背景樣本淨化']=`${nb} → ${n2} px`; }
+  bm2.delete();
   C.forEach(c=>c.delete()); ch.delete(); t.delete(); bm.delete();
-  cv.sqrt(acc,acc);
+  cv.threshold(acc,acc,12,0,cv.THRESH_TRUNC);   // clip: one saturated patch must not compress the rest
   const d8=new cv.Mat(); cv.normalize(acc,d8,0,255,cv.NORM_MINMAX,cv.CV_8U); acc.delete();
   const th=new cv.Mat();
   DIAG['背景色差 Otsu 閾值']=cv.threshold(d8,th,0,255,cv.THRESH_BINARY+cv.THRESH_OTSU).toFixed(0);
@@ -670,6 +688,17 @@ function segment(roi){
     if(raw)raw.delete();
     if(!m){ tried.push(`${how} 找不到區塊`); continue }
     let frac=cv.countNonZero(m)/tot;
+    { // a real garment never wraps around the ROI border; if the "foreground" fills the
+      // border ring the threshold picked the board itself — reject it
+      const b=Math.max(4,Math.round(Math.min(m.rows,m.cols)*0.02));
+      const ring=new cv.Mat.zeros(m.rows,m.cols,cv.CV_8U);
+      cv.rectangle(ring,new cv.Point(0,0),new cv.Point(m.cols-1,m.rows-1),new cv.Scalar(255),-1);
+      cv.rectangle(ring,new cv.Point(b,b),new cv.Point(m.cols-1-b,m.rows-1-b),new cv.Scalar(0),-1);
+      const both=new cv.Mat(); cv.bitwise_and(m,ring,both);
+      const rf=cv.countNonZero(both)/Math.max(1,cv.countNonZero(ring));
+      ring.delete(); both.delete();
+      if(rf>0.5){ tried.push(`${how} 前景包住邊框(${(rf*100).toFixed(0)}%)`); m.delete(); continue }
+    }
     if(frac>=AREA_MIN&&frac<=AREA_MAX){
       const r0=roughness(m);
       DIAG['邊緣粗糙度']=r0.toFixed(1);
@@ -683,6 +712,7 @@ function segment(roi){
           } else { g.delete(); DIAG['邊緣粗糙度']=`${r0.toFixed(1)}（GrabCut 未改善，維持原狀）` }
         }
       }
+      if(tried.length)DIAG['分割嘗試']=tried.join('、');
       return {mask:m,how,frac};
     }
     tried.push(`${how} ${(frac*100).toFixed(1)}%`);
@@ -691,6 +721,12 @@ function segment(roi){
   return {mask:null,msg:`衣物與背景對比不足（${tried.join('、')}）。淺色衣物請改用深色背景。`};
 }
 
+/* item mode keeps the photo's own orientation — mirror symmetry means nothing
+   for a plush toy or a bag, and rotating one sideways just confuses the seller */
+function itemUpright(mask,colour){
+  const bb=cv.boundingRect(mask);
+  return {up:mask.roi(bb).clone(), upColor:colour.roi(bb).clone(), ang:0, iou:1};
+}
 /* ---------- upright ---------- */
 /* Row profiles, computed natively (Mat.data row stride is unreliable in opencv.js).
    count = filled pixels in the row, span = last-first+1.  Their difference is the
@@ -786,6 +822,7 @@ function notchDepth(two,fromEnd){
   return best/h;
 }
 function classify(up,forced){
+  if(forced==='item') return {isBottom:false,flip:false,dTop:0,dBot:0,isItem:true};
   const count=widths(up).map(v=>v/P), span=spans(up).map(v=>v/P);
   const two=span.map((s,i)=>s-count[i] > 4);          // a hole of 4 mm or more
   const dTop=notchDepth(two,false), dBot=notchDepth(two,true);
@@ -801,7 +838,8 @@ const SPEC={
   top:   {cards:[['vL','衣長'],['vC','胸寬'],['vS','肩寬'],['vW','下擺']],
           manual:['shoulder']},
   bottom:{cards:[['vL','褲長'],['vC','腰寬'],['vS','股上'],['vW','褲口']],
-          manual:['opening','rise']}
+          manual:['opening','rise']},
+  item:  {cards:[['vL','高'],['vC','寬']], manual:[]}
 };
 
 function measure(up,forced){
@@ -809,6 +847,14 @@ function measure(up,forced){
   const count=widths(up).map(v=>v/P), span=spans(up).map(v=>v/P);   // px -> mm
   const two=span.map((s,i)=>s-count[i] > 4);                        // hole of 4 mm or more
   const R={_h:h,_w:up.cols,prof:span,count,two,length:h/P};
+  if(forced==='item'){
+    // 一般物品：只量外框寬高（遮罩已是緊貼外框的裁切）
+    R.type='item';
+    R.width=up.cols/P; R.height=h/P;
+    R.keys={length:'height',a:'width'};
+    R.span=(y)=>rowSpanOf(up,y);
+    return R;
+  }
   const {isBottom}=classify(up,forced);
   R.type=isBottom?'bottom':'top';
   let ymax=0;for(let i=1;i<h;i++)if(span[i]>span[ymax])ymax=i; R._ymax=ymax;
@@ -874,7 +920,7 @@ function drawProfile(R){
   const line=(y,col,t)=>{const py=y/R._h*H;x.strokeStyle=col;x.setLineDash([4,3]);
     x.beginPath();x.moveTo(0,py);x.lineTo(W,py);x.stroke();x.setLineDash([]);
     x.fillStyle=col;x.font='10px sans-serif';x.fillText(t,4,py-3)};
-  line(R._ys,'#ffb454','SHOULDER');line(R._yp,'#3ddc97','CHEST');line(R._yh,'#ff6b6b','WAIST');
+  if(R.type!=='item'){line(R._ys,'#ffb454','SHOULDER');line(R._yp,'#3ddc97','CHEST');line(R._yh,'#ff6b6b','WAIST');}
 }
 
 /* ---------- garment type: geometry decides, the user can override ---------- */
@@ -885,12 +931,27 @@ function syncTypeUI(){
   $('tTop').style.color      = t==='top'?'#04101f':'var(--fg)';
   $('tBot').style.background = t==='bottom'?'var(--acc)':'#242a35';
   $('tBot').style.color      = t==='bottom'?'#04101f':'var(--fg)';
-  $('tHint').textContent = TYPE_FORCED ? '已手動指定類型'
+  $('tItem').style.background= t==='item'?'var(--acc)':'#242a35';
+  $('tItem').style.color     = t==='item'?'#04101f':'var(--fg)';
+  $('tHint').textContent = TYPE_FORCED ? (TYPE_FORCED==='item'?'物品模式：量外框寬×高':'已手動指定類型')
     : `自動判定（缺口深度 ${Math.max(ST.cls.dTop,ST.cls.dBot).toFixed(2)}，門檻 0.18）`;
 }
 function setType(t){
-  if(ST.R.type===t){TYPE_FORCED=null;syncTypeUI();return}
+  if(ST.R.type===t && t!=='item'){TYPE_FORCED=null;syncTypeUI();return}
+  if(ST.R.type===t) return;
+  const from=ST.R.type;
   TYPE_FORCED=t;
+  if(t==='item' || from==='item'){
+    // orientation rules differ: items keep the photo orientation, garments get the
+    // symmetry-axis upright — so rebuild the crop from the stored mask
+    const roiRect=new cv.Rect(Math.round(ST_ROI[0]*P),Math.round(ST_ROI[1]*P),
+                              Math.round(ST_ROI[2]*P),Math.round(ST_ROI[3]*P));
+    const roi=ST.rect.roi(roiRect).clone();
+    const r=(t==='item')?itemUpright(ST.mask,roi):upright(ST.mask,roi);
+    roi.delete();
+    ST.up.delete(); ST.upColor.delete();
+    ST.up=r.up; ST.upColor=r.upColor; ST.ang=r.ang;
+  }
   const c=classify(ST.up,t);
   if(c.flip){cv.flip(ST.up,ST.up,-1);cv.flip(ST.upColor,ST.upColor,-1)}
   ST.R=measure(ST.up,t);
@@ -899,9 +960,10 @@ function setType(t){
 }
 $('tTop').onclick=()=>setType('top');
 $('tBot').onclick=()=>setType('bottom');
+$('tItem').onclick=()=>setType('item');
 
 /* ---------- interactive overlay ---------- */
-let HAND=[],VLIST=[],drag=null,OVW=0,OVH=0,BASE=null,PAD=0,SCENE=null,LOUPE=null;
+let HAND=[],VLIST=[],FRAME=null,drag=null,OVW=0,OVH=0,BASE=null,PAD=0,SCENE=null,LOUPE=null;
 
 function initOverlay(){
   const {up,R}=ST;
@@ -915,7 +977,10 @@ function initOverlay(){
     const half=width*P/2, cx=up.cols/2;
     return {y,a:Math.round(cx-half),c:Math.round(cx+half),label,key,col,type:'h'};
   };
-  if(R.type==='top'){
+  FRAME=null;
+  if(R.type==='item'){
+    HAND=[]; FRAME={x1:0,y1:0,x2:up.cols-1,y2:up.rows-1};
+  }else if(R.type==='top'){
     HAND=[centred(R._ys,R.shoulder,'肩寬','shoulder','#e08c1e'),
           mk(R._yp,'胸寬','chest','#12a06a'),
           mk(R._yh,'下擺','hem','#d94a4a')];
@@ -925,16 +990,19 @@ function initOverlay(){
           {y:R._yo,y2:R._yo,a:oa,c:ob,label:'褲口',key:'opening',col:'#d94a4a',
            type:'h',free:true}];
   }
-  // card captions follow the garment type
+  // card captions follow the garment type; item mode only shows two cards
+  ['vL','vC','vS','vW'].forEach(id=>{$(id).closest('.m').style.display=''});
   SPEC[R.type].cards.forEach(([id,name])=>{
     $(id).closest('.m').querySelector('.k').textContent=name;
   });
+  if(R.type==='item') ['vS','vW'].forEach(id=>{$(id).closest('.m').style.display='none'});
   $('f_height').previousElementSibling && ($('f_height').previousElementSibling.textContent =
     R.type==='top' ? '適穿身高' : '適穿腰圍');
 
   PAD=Math.round(up.cols*0.10);
   const ov=$('ov');OVW=ov.width=up.cols+2*PAD;OVH=ov.height=up.rows+2*PAD;
-  VLIST=[{x:Math.round(-PAD*0.55),y1:(R.type==='bottom'?R._top:0),y2:up.rows-1,
+  VLIST=(R.type==='item')?[]:
+        [{x:Math.round(-PAD*0.55),y1:(R.type==='bottom'?R._top:0),y2:up.rows-1,
           label:R.type==='bottom'?'褲長':'衣長',key:'length',col:'#2f7fd6',type:'v',side:-1}];
   if(R.type==='bottom')
     VLIST.push({x:up.cols+Math.round(PAD*0.55),y1:R._top,y2:R._yc,
@@ -952,6 +1020,11 @@ function initOverlay(){
                          out.push({m:h,i,p:[h.c,h.free?h.y2:h.y],which:1})});
     VLIST.forEach(v=>{out.push({m:v,p:[v.x,v.y1],which:0});
                       out.push({m:v,p:[v.x,v.y2],which:1})});
+    if(FRAME){const f=FRAME;
+      out.push({m:f,p:[f.x1,f.y1],which:'tl',frame:true},
+               {m:f,p:[f.x2,f.y1],which:'tr',frame:true},
+               {m:f,p:[f.x1,f.y2],which:'bl',frame:true},
+               {m:f,p:[f.x2,f.y2],which:'br',frame:true});}
     return out;
   };
   const down=e=>{const [x,y]=pos(e);let bd=1e9;drag=null;
@@ -960,7 +1033,13 @@ function initOverlay(){
     if(drag){e.preventDefault();LOUPE={on:true,x,y};paint()}};
   const move=e=>{if(!drag)return;e.preventDefault();const [x,y]=pos(e);
     const m=drag.m;
-    if(m.type==='h'){
+    if(drag.frame){
+      const xx=Math.round(x), yy=Math.round(y);
+      if(drag.which==='tl'){m.x1=xx;m.y1=yy}
+      else if(drag.which==='tr'){m.x2=xx;m.y1=yy}
+      else if(drag.which==='bl'){m.x1=xx;m.y2=yy}
+      else {m.x2=xx;m.y2=yy}
+    }else if(m.type==='h'){
       const yy=Math.max(0,Math.min(BASE.height-1,Math.round(y)));
       if(m.free){ if(drag.which){m.c=Math.round(x);m.y2=yy} else {m.a=Math.round(x);m.y=yy} }
       else { m.y=yy; if(drag.which)m.c=Math.round(x); else m.a=Math.round(x); }
@@ -975,6 +1054,10 @@ function initOverlay(){
   ov.ontouchstart=down;ov.ontouchmove=move;ov.ontouchend=upE;ov.ontouchcancel=upE;
 }
 function measured(key){
+  if(FRAME){
+    if(key==='width')  return Math.abs(FRAME.x2-FRAME.x1)/P;
+    if(key==='height') return Math.abs(FRAME.y2-FRAME.y1)/P;
+  }
   const v=VLIST.find(x=>x.key===key);
   if(v) return Math.abs(v.y2-v.y1)/P;
   const h=HAND.find(x=>x.key===key);
@@ -982,6 +1065,7 @@ function measured(key){
   return h.free ? Math.hypot(h.c-h.a,h.y2-h.y)/P : Math.abs(h.c-h.a)/P;
 }
 function cardMap(){
+  if(ST.R.type==='item') return {height:'vL',width:'vC'};
   return ST.R.type==='top' ? {length:'vL',chest:'vC',shoulder:'vS',hem:'vW'}
                            : {length:'vL',waist:'vC',rise:'vS',opening:'vW'};
 }
@@ -1039,6 +1123,19 @@ function paintScene(){
     x.save();x.translate(lx+FS*1.0*(v.side||-1)*-1,(y1+y2)/2);x.rotate(-Math.PI/2);
     label(`${v.label} ${(measured(v.key)/10).toFixed(1)} cm`,0,0,v.col);x.restore();
   });
+  if(FRAME){
+    const f=FRAME, x1=Math.min(f.x1,f.x2)+PAD, x2=Math.max(f.x1,f.x2)+PAD,
+                   y1=Math.min(f.y1,f.y2)+PAD, y2=Math.max(f.y1,f.y2)+PAD;
+    const col='#2f7fd6';
+    x.lineWidth=LW;x.strokeStyle=col;x.fillStyle=col;
+    halo(()=>{x.beginPath();x.rect(x1,y1,x2-x1,y2-y1);x.stroke()});
+    x.fillStyle=col;
+    [[x1,y1],[x2,y1],[x1,y2],[x2,y2]].forEach(([px,py])=>knob(px,py));
+    // 標籤放在外框「外側」：寬在上緣上方、高在左緣左側，不遮住商品
+    label(`寬 ${(measured('width')/10).toFixed(1)} cm`,(x1+x2)/2,Math.max(FS*0.9,y1-FS*1.1),col);
+    x.save();x.translate(Math.max(FS*0.9,x1-FS*1.1),(y1+y2)/2);x.rotate(-Math.PI/2);
+    label(`高 ${(measured('height')/10).toFixed(1)} cm`,0,0,col);x.restore();
+  }
   x.textAlign='right';x.font=`${FS*0.6}px -apple-system,system-ui,sans-serif`;
   x.fillStyle='rgba(0,0,0,.28)';
   x.fillText('ArUco 校正量測',OVW-FS*0.5,OVH-FS*0.45);
@@ -1122,7 +1219,9 @@ const SIZES_KID=[[27,'童80','75-85'],[29,'童90','85-95'],[31,'童100','95-105'
 const SIZES_BOT=[[36,'S','66-72'],[39,'M','72-78'],[42,'L','78-84'],
                  [45,'XL','84-90'],[999,'2XL','90-96']];
 function derive(){
-  const R=ST.R, len=measured('length')/10;
+  const R=ST.R;
+  if(R.type==='item') return {size:'',height:'',fit:'',cat:'',colour:meanColour()};
+  const len=measured('length')/10;
   if(R.type==='bottom'){
     const waist=measured('waist')/10, open_=measured('opening')/10;
     const sz=SIZES_BOT.find(s=>waist<s[0]);
@@ -1153,8 +1252,10 @@ function fillDerived(){
 /* ---------- title ---------- */
 const F=id=>($(id).value||'').trim();
 function buildDesc(){
-  const d=derive(), isTop=ST.R&&ST.R.type==='top';
-  const meas = isTop
+  const d=derive(), isTop=ST.R&&ST.R.type==='top', isItem=ST.R&&ST.R.type==='item';
+  const meas = isItem
+    ? [['寬','vC'],['高','vL']]
+    : isTop
     ? [['衣長','vL'],['胸寬(腋下平量)','vC'],['肩寬','vS'],['下擺','vW']]
     : [['褲長','vL'],['腰寬(平量)','vC'],['股上','vS'],['褲口','vW']];
   const L=[];
@@ -1162,7 +1263,7 @@ function buildDesc(){
   L.push('');
   L.push('【實測尺寸】平鋪量測，單位公分');
   meas.forEach(([n,id])=>L.push(`▪ ${n}：${$(id).textContent} cm`));
-  if(F('f_height')) L.push(`▪ 建議${isTop?'身高':'腰圍'}：${F('f_height')}${isTop?' cm（依胸寬推估，請以尺寸為準）':' cm'}`);
+  if(!isItem && F('f_height')) L.push(`▪ 建議${isTop?'身高':'腰圍'}：${F('f_height')}${isTop?' cm（依胸寬推估，請以尺寸為準）':' cm'}`);
   L.push('');
   L.push('【商品資訊】');
   if(F('f_brand'))  L.push(`▪ 品牌：${F('f_brand')}`);
@@ -1234,6 +1335,7 @@ function autoName(){                    // compact: identity + sizes, not the wh
   const g=id=>$(id).textContent.replace('.','');
   const id_=[F('f_brand'),F('f_gender'),F('f_cat'),F('f_color'),F('f_size')]
     .filter(Boolean).join('_').replace(/[\\/:*?"<>|]/g,'').replace(/\s+/g,'');
+  if(ST.R && ST.R.type==='item') return `${id_?id_+'_':''}寬${g('vC')}_高${g('vL')}`;
   return `${id_?id_+'_':''}肩${g('vS')}_胸${g('vC')}_腰${g('vW')}_長${g('vL')}`;
 }
 function refreshName(){ $('fpreview').textContent=autoName()+'_商品.jpg　/　…_尺寸.jpg' }
