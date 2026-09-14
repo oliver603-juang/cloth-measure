@@ -65,7 +65,7 @@ td{padding:4px 0;border-bottom:1px solid var(--line)}td:last-child{text-align:ri
 <header>
   <div class="grow"><h1>衣物尺寸量測</h1>
   <div class="sub">ArUco 校正 → 分割去背 → 尺寸量測 → AI 命名　<span id="build"
-    style="opacity:.55">build 09-14 name</span></div></div>
+    style="opacity:.55">build 09-14 raw</span></div></div>
   <button id="gear" title="設定 AI 金鑰">⚙</button>
 </header>
 
@@ -218,7 +218,7 @@ const BOARD_V2={
   cleanOrigin:[100,100], cleanArea:[800,1100], inset:12,
   centres:{"0": [57.0, 57.0], "1": [278.5, 57.0], "2": [500.0, 57.0], "3": [721.5, 57.0], "4": [943.0, 57.0], "5": [57.0, 254.7], "6": [943.0, 254.7], "7": [57.0, 452.3], "8": [943.0, 452.3], "9": [57.0, 650.0], "10": [943.0, 650.0], "11": [57.0, 847.7], "12": [943.0, 847.7], "13": [57.0, 1045.3], "14": [943.0, 1045.3], "15": [57.0, 1243.0], "16": [278.5, 1243.0], "17": [500.0, 1243.0], "18": [721.5, 1243.0], "19": [943.0, 1243.0]}
 };
-const BUILD='09-14 name';
+const BUILD='09-14 raw';
 const DIAG={};
 function diagShow(){
   const rows=Object.entries(DIAG).map(([k,v])=>`<tr><td>${k}</td><td>${v}</td></tr>`).join('');
@@ -772,7 +772,12 @@ function segment(roi){
 /* item mode keeps the photo's own orientation — mirror symmetry means nothing
    for a plush toy or a bag, and rotating one sideways just confuses the seller */
 function itemUpright(mask,colour){
-  const bb=cv.boundingRect(mask);
+  // 物品模式不去背：裁切時外加 30mm 邊距，畫面保留原背景，外框可再往外拖
+  const b0=cv.boundingRect(mask), M=Math.round(30*P);
+  const x=Math.max(0,b0.x-M), y=Math.max(0,b0.y-M);
+  const bb=new cv.Rect(x,y,
+    Math.min(mask.cols-x,b0.width +(b0.x-x)+M),
+    Math.min(mask.rows-y,b0.height+(b0.y-y)+M));
   let up=mask.roi(bb).clone(), upColor=colour.roi(bb).clone();
   if(PHOTO_ROT){                        // 轉回拍照時的方向
     const code=[null,cv.ROTATE_90_CLOCKWISE,cv.ROTATE_180,cv.ROTATE_90_COUNTERCLOCKWISE][PHOTO_ROT];
@@ -1023,9 +1028,13 @@ let HAND=[],VLIST=[],FRAME=null,drag=null,OVW=0,OVH=0,BASE=null,PAD=0,SCENE=null
 function initOverlay(){
   const {up,R}=ST;
   BASE=document.createElement('canvas');
-  const out=new cv.Mat(up.rows,up.cols,cv.CV_8UC4,new cv.Scalar(255,255,255,255));
-  ST.upColor.copyTo(out,up);            // copy garment pixels only where the mask is set
-  cv.imshow(BASE,out); out.delete();
+  if(R.type==='item'){
+    cv.imshow(BASE,ST.upColor);         // 物品模式：不去背，保留原背景
+  }else{
+    const out=new cv.Mat(up.rows,up.cols,cv.CV_8UC4,new cv.Scalar(255,255,255,255));
+    ST.upColor.copyTo(out,up);          // copy garment pixels only where the mask is set
+    cv.imshow(BASE,out); out.delete();
+  }
 
   const mk=(y,label,key,col)=>{const [a,c]=R.span(y);return {y,a,c,label,key,col,type:'h'}};
   const centred=(y,width,label,key,col)=>{
@@ -1034,7 +1043,9 @@ function initOverlay(){
   };
   FRAME=null;
   if(R.type==='item'){
-    HAND=[]; FRAME={x1:0,y1:0,x2:up.cols-1,y2:up.rows-1};
+    HAND=[];
+    const bb=cv.boundingRect(up);       // 外框從偵測到的輪廓開始，四角可拖曳修正
+    FRAME={x1:bb.x,y1:bb.y,x2:bb.x+bb.width-1,y2:bb.y+bb.height-1};
   }else if(R.type==='top'){
     HAND=[centred(R._ys,R.shoulder,'肩寬','shoulder','#e08c1e'),
           mk(R._yp,'胸寬','chest','#12a06a'),
