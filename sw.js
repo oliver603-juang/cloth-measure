@@ -4,7 +4,7 @@
      so a deployed update is always picked up when online.
    - opencv.js and other static GETs: cache first (the CDN URL pins an exact
      version, it can never go stale).                                       */
-const VER = 'cm-pwa-1';
+const VER = 'cm-pwa-2';
 const CV  = 'https://cdn.jsdelivr.net/npm/@techstark/opencv-js@4.10.0-release.1/dist/opencv.js';
 
 self.addEventListener('install', e => {
@@ -30,7 +30,8 @@ self.addEventListener('fetch', e => {
     e.respondWith((async () => {
       const c = await caches.open(VER);
       try {
-        const r = await fetch(e.request);
+        // no-cache: 跳過瀏覽器 HTTP 快取（GitHub Pages max-age=600 會讓手機黏在舊版）
+        const r = await fetch(e.request, { cache: 'no-cache' });
         c.put('./index.html', r.clone());
         return r;
       } catch (err) {

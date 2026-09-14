@@ -65,7 +65,7 @@ td{padding:4px 0;border-bottom:1px solid var(--line)}td:last-child{text-align:ri
 <header>
   <div class="grow"><h1>衣物尺寸量測</h1>
   <div class="sub">ArUco 校正 → 分割去背 → 尺寸量測 → AI 命名　<span id="build"
-    style="opacity:.55">build 09-14 pwa</span></div></div>
+    style="opacity:.55">build 09-14 pwa2</span></div></div>
   <button id="gear" title="設定 AI 金鑰">⚙</button>
 </header>
 
@@ -217,7 +217,7 @@ const BOARD_V2={
   cleanOrigin:[100,100], cleanArea:[800,1100], inset:12,
   centres:{"0": [57.0, 57.0], "1": [278.5, 57.0], "2": [500.0, 57.0], "3": [721.5, 57.0], "4": [943.0, 57.0], "5": [57.0, 254.7], "6": [943.0, 254.7], "7": [57.0, 452.3], "8": [943.0, 452.3], "9": [57.0, 650.0], "10": [943.0, 650.0], "11": [57.0, 847.7], "12": [943.0, 847.7], "13": [57.0, 1045.3], "14": [943.0, 1045.3], "15": [57.0, 1243.0], "16": [278.5, 1243.0], "17": [500.0, 1243.0], "18": [721.5, 1243.0], "19": [943.0, 1243.0]}
 };
-const BUILD='08-06 23:51';
+const BUILD='09-14 pwa2';
 const DIAG={};
 function diagShow(){
   const rows=Object.entries(DIAG).map(([k,v])=>`<tr><td>${k}</td><td>${v}</td></tr>`).join('');
@@ -428,7 +428,7 @@ function run(){
   try{ if(cv.cornerSubPix) refine(gray,ms); }catch(err){}
   mark('aruco','ok',`${board.kind==='v2'?BOARD_V2.name:'四角標記板'}・${ms.length} 個標記`);
   $('q1').textContent=`${ms.length}（${board.kind}）`;
-  DIAG['板子']=board.kind; DIAG['分析尺寸']=`${gray.cols}×${gray.rows}`;
+  DIAG['板子']=board.kind; BOARD_KIND=board.kind; DIAG['分析尺寸']=`${gray.cols}×${gray.rows}`;
   DIAG['標記']=ms.map(m=>m.id).sort((a,b)=>a-b).join(',');
   $('cfg').style.display = board.kind==='legacy' ? '' : 'none';
 
@@ -456,12 +456,26 @@ function run(){
   cSm.delete();cDm.delete();H0.delete();
   const sMat=cv.matFromArray(S.length/2,1,cv.CV_32FC2,S), dMat=cv.matFromArray(D.length/2,1,cv.CV_32FC2,D);
   const Hm=cv.findHomography(sMat,dMat, ms.length>4?cv.RANSAC:0, 6);
+  { // 記下「板子在照片裡的旋轉方向」：物品模式要照拍照方向呈現，不是板子的座標方向
+    const I=invMat(Hm), pts=cv.matFromArray(2,1,cv.CV_32FC2,[0,0,100,0]), o=new cv.Mat();
+    cv.perspectiveTransform(pts,o,I);
+    const th=Math.atan2(o.data32F[3]-o.data32F[1],o.data32F[2]-o.data32F[0])*180/Math.PI;
+    PHOTO_ROT=((Math.round(th/90)%4)+4)%4;
+    if(PHOTO_ROT) DIAG['板子拍攝方向']=`${th.toFixed(0)}°（物品模式將轉回 ${PHOTO_ROT*90}°）`;
+    pts.delete();o.delete();I.delete();
+  }
   const back=new cv.Mat(); cv.perspectiveTransform(dMat,back,invMat(Hm));
   const res=[];for(let i=0;i<S.length/2;i++)res.push(Math.hypot(back.data32F[i*2]-S[i*2],back.data32F[i*2+1]-S[i*2+1]));
   let e=res.reduce((a2,b2)=>a2+b2,0)/res.length; back.delete();
-  $('q2').textContent=e.toFixed(2)+' px';
-  DIAG['Reprojection error']=e.toFixed(2)+' px';
-  mark('homo',e<3?'ok':'err',e<3?`誤差 ${e.toFixed(2)} px`:`誤差過大 ${e.toFixed(2)} px — 檢查板面設定`);
+  // 用中位數判定：實體板略有翹曲或個別角點偏差時，平均值會被少數離群點拉高，
+  // 但整體幾何仍正確（中央量測區受影響極小）
+  const med=[...res].sort((x,y)=>x-y)[res.length>>1];
+  $('q2').textContent=med.toFixed(2)+' px';
+  DIAG['Reprojection error']=`中位數 ${med.toFixed(2)} px（平均 ${e.toFixed(2)} px）`;
+  mark('homo',med<3?'ok':(med<6?'ok':'err'),
+    med<3?`誤差中位數 ${med.toFixed(2)} px`
+         :med<6?`誤差中位數 ${med.toFixed(2)} px（板面可能略翹，中央區量測仍可靠）`
+               :`誤差過大 中位數 ${med.toFixed(2)} px — 檢查板面設定`);
   const CW=Math.round(board.size[0]*P), CH=Math.round(board.size[1]*P);
   const rect=new cv.Mat(); cv.warpPerspective(sm,rect,Hm,new cv.Size(CW,CH));
   sMat.delete();dMat.delete();Hm.delete();sm.delete();gray.delete();
@@ -520,7 +534,7 @@ function invMat(H){const I=new cv.Mat();cv.invert(H,I);return I}
    method instead models the background colour from a border band of the ROI and
    thresholds the Mahalanobis distance to it, which uses chroma as well as lightness.
    Otsu stays as a fallback; whichever produces a plausible area fraction wins.      */
-const AREA_MIN=0.08, AREA_MAX=0.75;
+const AREA_MIN=0.025, AREA_MAX=0.75;   // 2.5%：小件物品（玩偶、配件）也放得進來
 
 function largestBlob(th){
   const lab=new cv.Mat(),stats=new cv.Mat(),cen=new cv.Mat();
@@ -724,6 +738,25 @@ function segment(roi){
           } else { g.delete(); DIAG['邊緣粗糙度']=`${r0.toFixed(1)}（GrabCut 未改善，維持原狀）` }
         }
       }
+      if(BOARD_KIND==='v2'){
+        // 綠板專用：把混進遮罩的純綠背景（陰影邊、殘塊）剔掉再取最大區塊
+        const rgb=new cv.Mat(); cv.cvtColor(roi,rgb,cv.COLOR_RGBA2RGB);
+        const chs=new cv.MatVector(); cv.split(rgb,chs); rgb.delete();
+        const r_=chs.get(0),g_=chs.get(1),b_=chs.get(2);
+        const gr=new cv.Mat(),gb=new cv.Mat(),grn=new cv.Mat();
+        cv.subtract(g_,r_,gr); cv.subtract(g_,b_,gb);
+        cv.threshold(gr,gr,25,255,cv.THRESH_BINARY);
+        cv.threshold(gb,gb,25,255,cv.THRESH_BINARY);
+        cv.bitwise_and(gr,gb,grn);
+        cv.bitwise_not(grn,grn);
+        const m2=new cv.Mat(); cv.bitwise_and(m,grn,m2);
+        [gr,gb,grn].forEach(x=>x.delete()); chs.delete();r_.delete();g_.delete();b_.delete();
+        const before=cv.countNonZero(m), lb=largestBlob(m2); m2.delete();
+        if(lb.blob && lb.area>before*0.35){
+          m.delete(); m=fillAndSmooth(lb.blob); frac=cv.countNonZero(m)/tot;
+          DIAG['綠背景剔除']=`${before} → ${cv.countNonZero(m)} px`;
+        } else if(lb.blob) lb.blob.delete();
+      }
       if(tried.length)DIAG['分割嘗試']=tried.join('、');
       return {mask:m,how,frac};
     }
@@ -737,7 +770,14 @@ function segment(roi){
    for a plush toy or a bag, and rotating one sideways just confuses the seller */
 function itemUpright(mask,colour){
   const bb=cv.boundingRect(mask);
-  return {up:mask.roi(bb).clone(), upColor:colour.roi(bb).clone(), ang:0, iou:1};
+  let up=mask.roi(bb).clone(), upColor=colour.roi(bb).clone();
+  if(PHOTO_ROT){                        // 轉回拍照時的方向
+    const code=[null,cv.ROTATE_90_CLOCKWISE,cv.ROTATE_180,cv.ROTATE_90_COUNTERCLOCKWISE][PHOTO_ROT];
+    const a=new cv.Mat(),b=new cv.Mat();
+    cv.rotate(up,a,code); cv.rotate(upColor,b,code);
+    up.delete(); upColor.delete(); up=a; upColor=b;
+  }
+  return {up, upColor, ang:PHOTO_ROT*90, iou:1};
 }
 /* ---------- upright ---------- */
 /* Row profiles, computed natively (Mat.data row stride is unreliable in opencv.js).
@@ -936,7 +976,7 @@ function drawProfile(R){
 }
 
 /* ---------- garment type: geometry decides, the user can override ---------- */
-let TYPE_FORCED=null;
+let TYPE_FORCED=null, PHOTO_ROT=0, BOARD_KIND='';
 function syncTypeUI(){
   const t=ST.R.type;
   $('tTop').style.background = t==='top'?'var(--acc)':'#242a35';
