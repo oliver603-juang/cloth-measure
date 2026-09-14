@@ -65,7 +65,7 @@ td{padding:4px 0;border-bottom:1px solid var(--line)}td:last-child{text-align:ri
 <header>
   <div class="grow"><h1>衣物尺寸量測</h1>
   <div class="sub">ArUco 校正 → 分割去背 → 尺寸量測 → AI 命名　<span id="build"
-    style="opacity:.55">build 09-14 pwa2</span></div></div>
+    style="opacity:.55">build 09-14 type</span></div></div>
   <button id="gear" title="設定 AI 金鑰">⚙</button>
 </header>
 
@@ -117,10 +117,11 @@ td{padding:4px 0;border-bottom:1px solid var(--line)}td:last-child{text-align:ri
 </div>
 
 <div class="card" id="rcard" style="display:none">
-  <div class="row" style="gap:6px;margin-bottom:10px">
-    <button class="sec" id="tTop" style="padding:8px;font-size:13px">上衣</button>
-    <button class="sec" id="tBot" style="padding:8px;font-size:13px">下著</button>
-    <button class="sec" id="tItem" style="padding:8px;font-size:13px">物品</button>
+  <b style="font-size:13px">商品類型</b>
+  <div class="row" style="gap:8px;margin:8px 0 10px">
+    <button class="sec" id="tTop" style="padding:12px 4px;font-size:15px">👕 上衣</button>
+    <button class="sec" id="tBot" style="padding:12px 4px;font-size:15px">👖 褲子</button>
+    <button class="sec" id="tItem" style="padding:12px 4px;font-size:15px">🧸 物品</button>
   </div>
   <div class="hint" style="margin:-4px 0 10px" id="tHint"></div>
   <div class="res">
@@ -217,7 +218,7 @@ const BOARD_V2={
   cleanOrigin:[100,100], cleanArea:[800,1100], inset:12,
   centres:{"0": [57.0, 57.0], "1": [278.5, 57.0], "2": [500.0, 57.0], "3": [721.5, 57.0], "4": [943.0, 57.0], "5": [57.0, 254.7], "6": [943.0, 254.7], "7": [57.0, 452.3], "8": [943.0, 452.3], "9": [57.0, 650.0], "10": [943.0, 650.0], "11": [57.0, 847.7], "12": [943.0, 847.7], "13": [57.0, 1045.3], "14": [943.0, 1045.3], "15": [57.0, 1243.0], "16": [278.5, 1243.0], "17": [500.0, 1243.0], "18": [721.5, 1243.0], "19": [943.0, 1243.0]}
 };
-const BUILD='09-14 pwa2';
+const BUILD='09-14 type';
 const DIAG={};
 function diagShow(){
   const rows=Object.entries(DIAG).map(([k,v])=>`<tr><td>${k}</td><td>${v}</td></tr>`).join('');
