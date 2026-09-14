@@ -65,7 +65,7 @@ td{padding:4px 0;border-bottom:1px solid var(--line)}td:last-child{text-align:ri
 <header>
   <div class="grow"><h1>衣物尺寸量測</h1>
   <div class="sub">ArUco 校正 → 分割去背 → 尺寸量測 → AI 命名　<span id="build"
-    style="opacity:.55">build 09-14 raw</span></div></div>
+    style="opacity:.55">build 09-14 green</span></div></div>
   <button id="gear" title="設定 AI 金鑰">⚙</button>
 </header>
 
@@ -218,7 +218,7 @@ const BOARD_V2={
   cleanOrigin:[100,100], cleanArea:[800,1100], inset:12,
   centres:{"0": [57.0, 57.0], "1": [278.5, 57.0], "2": [500.0, 57.0], "3": [721.5, 57.0], "4": [943.0, 57.0], "5": [57.0, 254.7], "6": [943.0, 254.7], "7": [57.0, 452.3], "8": [943.0, 452.3], "9": [57.0, 650.0], "10": [943.0, 650.0], "11": [57.0, 847.7], "12": [943.0, 847.7], "13": [57.0, 1045.3], "14": [943.0, 1045.3], "15": [57.0, 1243.0], "16": [278.5, 1243.0], "17": [500.0, 1243.0], "18": [721.5, 1243.0], "19": [943.0, 1243.0]}
 };
-const BUILD='09-14 raw';
+const BUILD='09-14 green';
 const DIAG={};
 function diagShow(){
   const rows=Object.entries(DIAG).map(([k,v])=>`<tr><td>${k}</td><td>${v}</td></tr>`).join('');
@@ -503,7 +503,7 @@ function run(){
 
   // --- upright by mirror symmetry
   mark('up','run');
-  let {up,upColor,ang,iou}=(TYPE_FORCED==='item')?itemUpright(mask,roi):upright(mask,roi);
+  let {up,upColor,ang,iou}=(TYPE_FORCED==='item')?itemUpright(segR.maskPre||mask,roi):upright(mask,roi);
   const cls=classify(up,TYPE_FORCED);
   if(cls.flip){cv.flip(up,up,-1);cv.flip(upColor,upColor,-1);ang+=180}
   $('q3').textContent=ang.toFixed(1)+'°'; $('q4').textContent=iou.toFixed(3);
@@ -518,7 +518,7 @@ function run(){
   mark('meas','run');
   const R=measure(up,TYPE_FORCED);
   drawProfile(R);
-  ST={up,upColor,R,rect,mask,ang};
+  ST={up,upColor,R,rect,mask,maskPre:segR.maskPre,ang};
   { const d=new Date(), p=n=>String(n).padStart(2,'0');
     SHOT_TAG=`${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}`; }  // 每張照片的檔名時間碼
   mark('meas','ok',`${R.type==='top'?'上衣':R.type==='bottom'?'下著':'物品'}・共 ${(performance.now()-t0|0)} ms`);
@@ -710,7 +710,7 @@ function grabcutRefine(roi,m){
 }
 
 function segment(roi){
-  const tot=roi.rows*roi.cols, tried=[];
+  const tot=roi.rows*roi.cols, tried=[]; let maskPre=null;
   for(const [how,fn] of [['背景色差法',bgDistanceMask],['Otsu 亮度法',otsuGreyMask]]){
     let raw=null,m=null;
     try{ raw=fn(roi); m=cleanMask(raw); }catch(e){ tried.push(`${how} 失敗`); }
@@ -756,12 +756,13 @@ function segment(roi){
         [gr,gb,grn].forEach(x=>x.delete()); chs.delete();r_.delete();g_.delete();b_.delete();
         const before=cv.countNonZero(m), lb=largestBlob(m2); m2.delete();
         if(lb.blob && lb.area>before*0.35){
-          m.delete(); m=fillAndSmooth(lb.blob); frac=cv.countNonZero(m)/tot;
+          maskPre=m;                    // 剔除「前」的輪廓：綠色部位（如玩偶的綠葉）還在裡面
+          m=fillAndSmooth(lb.blob); frac=cv.countNonZero(m)/tot;
           DIAG['綠背景剔除']=`${before} → ${cv.countNonZero(m)} px`;
         } else if(lb.blob) lb.blob.delete();
       }
       if(tried.length)DIAG['分割嘗試']=tried.join('、');
-      return {mask:m,how,frac};
+      return {mask:m,maskPre,how,frac};
     }
     tried.push(`${how} ${(frac*100).toFixed(1)}%`);
     m.delete();
@@ -773,7 +774,7 @@ function segment(roi){
    for a plush toy or a bag, and rotating one sideways just confuses the seller */
 function itemUpright(mask,colour){
   // 物品模式不去背：裁切時外加 30mm 邊距，畫面保留原背景，外框可再往外拖
-  const b0=cv.boundingRect(mask), M=Math.round(30*P);
+  const b0=cv.boundingRect(mask), M=Math.round(60*P);
   const x=Math.max(0,b0.x-M), y=Math.max(0,b0.y-M);
   const bb=new cv.Rect(x,y,
     Math.min(mask.cols-x,b0.width +(b0.x-x)+M),
@@ -993,7 +994,9 @@ function syncTypeUI(){
   $('tBot').style.color      = t==='bottom'?'#04101f':'var(--fg)';
   $('tItem').style.background= t==='item'?'var(--acc)':'#242a35';
   $('tItem').style.color     = t==='item'?'#04101f':'var(--fg)';
-  $('tHint').textContent = TYPE_FORCED ? (TYPE_FORCED==='item'?'物品模式：量外框寬×高':'已手動指定類型')
+  $('tHint').textContent = TYPE_FORCED ? (TYPE_FORCED==='item'
+      ?(ST.maskPre?'物品模式：偵測到綠色部位，外框已含綠色區域，請拖曳四角確認':'物品模式：量外框寬×高')
+      :'已手動指定類型')
     : `自動判定（缺口深度 ${Math.max(ST.cls.dTop,ST.cls.dBot).toFixed(2)}，門檻 0.18）`;
 }
 function setType(t){
@@ -1007,7 +1010,7 @@ function setType(t){
     const roiRect=new cv.Rect(Math.round(ST_ROI[0]*P),Math.round(ST_ROI[1]*P),
                               Math.round(ST_ROI[2]*P),Math.round(ST_ROI[3]*P));
     const roi=ST.rect.roi(roiRect).clone();
-    const r=(t==='item')?itemUpright(ST.mask,roi):upright(ST.mask,roi);
+    const r=(t==='item')?itemUpright(ST.maskPre||ST.mask,roi):upright(ST.mask,roi);
     roi.delete();
     ST.up.delete(); ST.upColor.delete();
     ST.up=r.up; ST.upColor=r.upColor; ST.ang=r.ang;
