@@ -65,7 +65,7 @@ td{padding:4px 0;border-bottom:1px solid var(--line)}td:last-child{text-align:ri
 <header>
   <div class="grow"><h1>衣物尺寸量測</h1>
   <div class="sub">ArUco 校正 → 分割去背 → 尺寸量測 → AI 命名　<span id="build"
-    style="opacity:.55">build 09-14 green</span></div></div>
+    style="opacity:.55">build 09-14 field</span></div></div>
   <button id="gear" title="設定 AI 金鑰">⚙</button>
 </header>
 
@@ -218,7 +218,7 @@ const BOARD_V2={
   cleanOrigin:[100,100], cleanArea:[800,1100], inset:12,
   centres:{"0": [57.0, 57.0], "1": [278.5, 57.0], "2": [500.0, 57.0], "3": [721.5, 57.0], "4": [943.0, 57.0], "5": [57.0, 254.7], "6": [943.0, 254.7], "7": [57.0, 452.3], "8": [943.0, 452.3], "9": [57.0, 650.0], "10": [943.0, 650.0], "11": [57.0, 847.7], "12": [943.0, 847.7], "13": [57.0, 1045.3], "14": [943.0, 1045.3], "15": [57.0, 1243.0], "16": [278.5, 1243.0], "17": [500.0, 1243.0], "18": [721.5, 1243.0], "19": [943.0, 1243.0]}
 };
-const BUILD='09-14 green';
+const BUILD='09-14 field';
 const DIAG={};
 function diagShow(){
   const rows=Object.entries(DIAG).map(([k,v])=>`<tr><td>${k}</td><td>${v}</td></tr>`).join('');
@@ -1014,6 +1014,11 @@ function setType(t){
     roi.delete();
     ST.up.delete(); ST.upColor.delete();
     ST.up=r.up; ST.upColor=r.upColor; ST.ang=r.ang;
+  }
+  if(t==='item'){
+    // 衣物專用的自動推導欄位對物品沒有意義（尺碼/身高/版型/品類），
+    // 切換時清掉，避免檔名和標題掛著「背心 童80」這類殘留值
+    ['f_cat','f_size','f_height','f_fit'].forEach(id=>{$(id).value=''});
   }
   const c=classify(ST.up,t);
   if(c.flip){cv.flip(ST.up,ST.up,-1);cv.flip(ST.upColor,ST.upColor,-1)}
