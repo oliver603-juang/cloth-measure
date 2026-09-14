@@ -65,7 +65,7 @@ td{padding:4px 0;border-bottom:1px solid var(--line)}td:last-child{text-align:ri
 <header>
   <div class="grow"><h1>衣物尺寸量測</h1>
   <div class="sub">ArUco 校正 → 分割去背 → 尺寸量測 → AI 命名　<span id="build"
-    style="opacity:.55">build 09-14 type</span></div></div>
+    style="opacity:.55">build 09-14 name</span></div></div>
   <button id="gear" title="設定 AI 金鑰">⚙</button>
 </header>
 
@@ -218,7 +218,7 @@ const BOARD_V2={
   cleanOrigin:[100,100], cleanArea:[800,1100], inset:12,
   centres:{"0": [57.0, 57.0], "1": [278.5, 57.0], "2": [500.0, 57.0], "3": [721.5, 57.0], "4": [943.0, 57.0], "5": [57.0, 254.7], "6": [943.0, 254.7], "7": [57.0, 452.3], "8": [943.0, 452.3], "9": [57.0, 650.0], "10": [943.0, 650.0], "11": [57.0, 847.7], "12": [943.0, 847.7], "13": [57.0, 1045.3], "14": [943.0, 1045.3], "15": [57.0, 1243.0], "16": [278.5, 1243.0], "17": [500.0, 1243.0], "18": [721.5, 1243.0], "19": [943.0, 1243.0]}
 };
-const BUILD='09-14 type';
+const BUILD='09-14 name';
 const DIAG={};
 function diagShow(){
   const rows=Object.entries(DIAG).map(([k,v])=>`<tr><td>${k}</td><td>${v}</td></tr>`).join('');
@@ -519,6 +519,8 @@ function run(){
   const R=measure(up,TYPE_FORCED);
   drawProfile(R);
   ST={up,upColor,R,rect,mask,ang};
+  { const d=new Date(), p=n=>String(n).padStart(2,'0');
+    SHOT_TAG=`${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}`; }  // 每張照片的檔名時間碼
   mark('meas','ok',`${R.type==='top'?'上衣':R.type==='bottom'?'下著':'物品'}・共 ${(performance.now()-t0|0)} ms`);
   $('rcard').style.display='';$('ncard').style.display='';
   ST.cls=cls;
@@ -977,7 +979,7 @@ function drawProfile(R){
 }
 
 /* ---------- garment type: geometry decides, the user can override ---------- */
-let TYPE_FORCED=null, PHOTO_ROT=0, BOARD_KIND='';
+let TYPE_FORCED=null, PHOTO_ROT=0, BOARD_KIND='', SHOT_TAG='';
 function syncTypeUI(){
   const t=ST.R.type;
   $('tTop').style.background = t==='top'?'var(--acc)':'#242a35';
@@ -1388,8 +1390,9 @@ function autoName(){                    // compact: identity + sizes, not the wh
   const g=id=>$(id).textContent.replace('.','');
   const id_=[F('f_brand'),F('f_gender'),F('f_cat'),F('f_color'),F('f_size')]
     .filter(Boolean).join('_').replace(/[\\/:*?"<>|]/g,'').replace(/\s+/g,'');
-  if(ST.R && ST.R.type==='item') return `${id_?id_+'_':''}寬${g('vC')}_高${g('vL')}`;
-  return `${id_?id_+'_':''}肩${g('vS')}_胸${g('vC')}_腰${g('vW')}_長${g('vL')}`;
+  const tag=SHOT_TAG?`_${SHOT_TAG}`:'';   // 分析時間碼：同品多角度照片不會互相覆蓋
+  if(ST.R && ST.R.type==='item') return `${id_?id_+'_':''}寬${g('vC')}_高${g('vL')}${tag}`;
+  return `${id_?id_+'_':''}肩${g('vS')}_胸${g('vC')}_腰${g('vW')}_長${g('vL')}${tag}`;
 }
 function refreshName(){ $('fpreview').textContent=autoName()+'_商品.jpg　/　…_尺寸.jpg' }
 $('copy').onclick=()=>{navigator.clipboard.writeText($('title').textContent)
