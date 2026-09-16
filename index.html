@@ -65,7 +65,7 @@ td{padding:4px 0;border-bottom:1px solid var(--line)}td:last-child{text-align:ri
 <header>
   <div class="grow"><h1>衣物尺寸量測</h1>
   <div class="sub">ArUco 校正 → 分割去背 → 尺寸量測 → AI 命名　<span id="build"
-    style="opacity:.55">build 09-14 field</span></div></div>
+    style="opacity:.55">build 09-16 tiny</span></div></div>
   <button id="gear" title="設定 AI 金鑰">⚙</button>
 </header>
 
@@ -218,7 +218,7 @@ const BOARD_V2={
   cleanOrigin:[100,100], cleanArea:[800,1100], inset:12,
   centres:{"0": [57.0, 57.0], "1": [278.5, 57.0], "2": [500.0, 57.0], "3": [721.5, 57.0], "4": [943.0, 57.0], "5": [57.0, 254.7], "6": [943.0, 254.7], "7": [57.0, 452.3], "8": [943.0, 452.3], "9": [57.0, 650.0], "10": [943.0, 650.0], "11": [57.0, 847.7], "12": [943.0, 847.7], "13": [57.0, 1045.3], "14": [943.0, 1045.3], "15": [57.0, 1243.0], "16": [278.5, 1243.0], "17": [500.0, 1243.0], "18": [721.5, 1243.0], "19": [943.0, 1243.0]}
 };
-const BUILD='09-14 field';
+const BUILD='09-16 tiny';
 const DIAG={};
 function diagShow(){
   const rows=Object.entries(DIAG).map(([k,v])=>`<tr><td>${k}</td><td>${v}</td></tr>`).join('');
@@ -492,8 +492,18 @@ function run(){
   if(!segR.mask){
     mark('seg','err',segR.msg); diagShow();
     $('rcard').style.display='none';$('ncard').style.display='none';
+    // 小件/反光物品常過不了衣物用的門檻：給一鍵切到物品模式重跑
+    if(TYPE_FORCED!=='item' && !$('segItemBtn')){
+      const b=document.createElement('button');
+      b.id='segItemBtn'; b.className='sec';
+      b.style.cssText='margin-top:10px;padding:12px;width:100%;font-size:15px';
+      b.textContent='🧸 這是物品（小件/反光）— 用物品模式重新分析';
+      b.onclick=()=>{TYPE_FORCED='item'; b.remove(); setTimeout(run,30)};
+      $('steps').parentElement.appendChild(b);
+    }
     rect.delete();roi.delete();return;
   }
+  const oldBtn=$('segItemBtn'); if(oldBtn) oldBtn.remove();
   const mask=segR.mask;
   const areaCm2=cv.countNonZero(mask)/(P*P)/100;
   mark('seg','ok',`${segR.how}・面積 ${areaCm2.toFixed(0)} cm²（佔板面 ${(segR.frac*100).toFixed(0)}%）`);
@@ -711,6 +721,9 @@ function grabcutRefine(roi,m){
 
 function segment(roi){
   const tot=roi.rows*roi.cols, tried=[]; let maskPre=null;
+  // 物品模式的面積下限放寬到 0.4%：細長或反光的小物（水龍頭、餐具）
+  // 只佔板面 1~2%，衣物的 2.5% 門檻會把它整個拒絕
+  const amin = (TYPE_FORCED==='item') ? 0.004 : AREA_MIN;
   for(const [how,fn] of [['背景色差法',bgDistanceMask],['Otsu 亮度法',otsuGreyMask]]){
     let raw=null,m=null;
     try{ raw=fn(roi); m=cleanMask(raw); }catch(e){ tried.push(`${how} 失敗`); }
@@ -728,14 +741,14 @@ function segment(roi){
       ring.delete(); both.delete();
       if(rf>0.5){ tried.push(`${how} 前景包住邊框(${(rf*100).toFixed(0)}%)`); m.delete(); continue }
     }
-    if(frac>=AREA_MIN&&frac<=AREA_MAX){
+    if(frac>=amin&&frac<=AREA_MAX){
       const r0=roughness(m);
       DIAG['邊緣粗糙度']=r0.toFixed(1);
       if(r0>30){                                   // ragged boundary -> worth refining
         const g=grabcutRefine(roi,m);
         if(g){
           const r1=roughness(g), f1=cv.countNonZero(g)/tot;
-          if(r1<r0 && f1>=AREA_MIN && f1<=AREA_MAX){
+          if(r1<r0 && f1>=amin && f1<=AREA_MAX){
             m.delete(); m=g; frac=f1;
             DIAG['邊緣粗糙度']=`${r0.toFixed(1)} → ${r1.toFixed(1)}（GrabCut 精修）`;
           } else { g.delete(); DIAG['邊緣粗糙度']=`${r0.toFixed(1)}（GrabCut 未改善，維持原狀）` }
