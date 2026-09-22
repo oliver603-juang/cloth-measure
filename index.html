@@ -65,7 +65,7 @@ td{padding:4px 0;border-bottom:1px solid var(--line)}td:last-child{text-align:ri
 <header>
   <div class="grow"><h1>衣物尺寸量測</h1>
   <div class="sub">ArUco 校正 → 分割去背 → 尺寸量測 → AI 命名　<span id="build"
-    style="opacity:.55">build 09-17 rot</span></div></div>
+    style="opacity:.55">build 09-22 thick</span></div></div>
   <button id="gear" title="設定 AI 金鑰">⚙</button>
 </header>
 
@@ -130,6 +130,20 @@ td{padding:4px 0;border-bottom:1px solid var(--line)}td:last-child{text-align:ri
     <button class="sec" id="rR1" style="padding:8px">⟳ 1°</button>
     <button class="sec" id="rR5" style="padding:8px">⟳ 5°</button>
     <button class="sec" id="rRst" style="padding:8px">重設</button>
+  </div>
+  <div id="itemFix" style="display:none;margin:-2px 0 10px">
+    <div class="row" style="gap:6px;margin-bottom:6px">
+      <input id="thIn" type="number" step="0.1" inputmode="decimal" placeholder="物品厚度 cm"
+        style="flex:1;min-width:0;padding:9px;border-radius:8px;border:1px solid #333;background:#181b20;color:#eee">
+      <button class="sec" id="thBtn" style="padding:8px 10px">厚度補償</button>
+    </div>
+    <div class="row" style="gap:6px">
+      <input id="realIn" type="number" step="0.1" inputmode="decimal" placeholder="實測值 cm"
+        style="flex:1;min-width:0;padding:9px;border-radius:8px;border:1px solid #333;background:#181b20;color:#eee">
+      <button class="sec" id="realW" style="padding:8px 10px">校正寬</button>
+      <button class="sec" id="realH" style="padding:8px 10px">校正高</button>
+    </div>
+    <div class="hint" id="fixHint" style="margin-top:4px">有厚度的物品：上表面離板較近，會被量大。輸入厚度自動補償，或輸入一邊實測值校正。</div>
   </div>
   <div class="res">
     <div class="m auto"><div class="k">衣長 LENGTH</div><div class="v"><span id="vL">—</span> <small>cm</small></div></div>
@@ -225,7 +239,7 @@ const BOARD_V2={
   cleanOrigin:[100,100], cleanArea:[800,1100], inset:12,
   centres:{"0": [57.0, 57.0], "1": [278.5, 57.0], "2": [500.0, 57.0], "3": [721.5, 57.0], "4": [943.0, 57.0], "5": [57.0, 254.7], "6": [943.0, 254.7], "7": [57.0, 452.3], "8": [943.0, 452.3], "9": [57.0, 650.0], "10": [943.0, 650.0], "11": [57.0, 847.7], "12": [943.0, 847.7], "13": [57.0, 1045.3], "14": [943.0, 1045.3], "15": [57.0, 1243.0], "16": [278.5, 1243.0], "17": [500.0, 1243.0], "18": [721.5, 1243.0], "19": [943.0, 1243.0]}
 };
-const BUILD='09-17 rot';
+const BUILD='09-22 thick';
 const DIAG={};
 function diagShow(){
   const rows=Object.entries(DIAG).map(([k,v])=>`<tr><td>${k}</td><td>${v}</td></tr>`).join('');
@@ -285,6 +299,9 @@ $('fi').onchange=e=>{const f=e.target.files[0];if(!f)return;
  // decode straight into a canvas and hand that to cv.imread.  The old path went through
  // toDataURL('image/jpeg'), and that re-encode is a platform-dependent step that can
  // shift pixel values enough to matter on a low-contrast garment.
+ CAM_F35=0;
+ f.slice(0,262144).arrayBuffer().then(b=>{CAM_F35=exifF35(b);
+   if(CAM_F35)DIAG['EXIF 焦距']=CAM_F35+' mm (35mm 等效)';}).catch(()=>{});
  createImageBitmap(f,{imageOrientation:'from-image'}).then(bm=>{
    const MAXPX=24e6, sc=Math.min(1,Math.sqrt(MAXPX/(bm.width*bm.height)));
    const c=document.createElement('canvas');
@@ -299,6 +316,31 @@ $('fi').onchange=e=>{const f=e.target.files[0];if(!f)return;
    bm.close&&bm.close();
  }).catch(err=>{document.querySelector('label.file b').textContent='讀取失敗：'+err.message});};
 function chk(){$('run').disabled=!(cvReady&&imgEl);}
+/* 讀 JPEG EXIF 的 FocalLengthIn35mmFilm（tag 0xA405），找不到回 0 */
+function exifF35(buf){
+ try{
+  const v=new DataView(buf); if(v.getUint16(0)!==0xFFD8)return 0;
+  let o=2;
+  while(o+4<v.byteLength){
+    if(v.getUint8(o)!==0xFF)break;
+    const m=v.getUint8(o+1), len=v.getUint16(o+2);
+    if(m===0xE1 && o+10<v.byteLength && v.getUint32(o+4)===0x45786966){ // "Exif"
+      const t=o+10, le=v.getUint16(t)===0x4949;         // TIFF 起點、byte order
+      const g16=p=>v.getUint16(t+p,le), g32=p=>v.getUint32(t+p,le);
+      const scan=dir=>{const n=g16(dir);let ex=0,f35=0;
+        for(let i=0;i<n;i++){const e=dir+2+i*12,tag=g16(e);
+          if(tag===0x8769)ex=g32(e+8);                   // ExifIFD 指標
+          if(tag===0xA405)f35=g16(e+8);}
+        return {ex,f35};};
+      let r=scan(g32(4));                                // IFD0
+      if(!r.f35&&r.ex&&t+r.ex<v.byteLength)r.f35=scan(r.ex).f35;
+      return r.f35||0;
+    }
+    o+=2+len;
+  }
+ }catch(e){}
+ return 0;
+}
 $('run').onclick=()=>{setTimeout(run,30);};
 
 /* ---------- ArUco (custom, opencv.js primitives only) ---------- */
@@ -414,6 +456,8 @@ function show(cid,mat){const c=$(cid);cv.imshow(c,mat);}
 
 function run(){
   ITEM_ANG=0;                       // 每張新照片重設手動轉正
+  ITEM_SCALE=1; CAM_D=0;            // 厚度補償也重設
+  const fh=document.getElementById('fixHint'); if(fh)fh.textContent='有厚度的物品：上表面離板較近，會被量大。輸入厚度自動補償，或輸入一邊實測值校正。';
   ['aruco','homo','seg','up','meas'].forEach(k=>mark(k,''));
   $('qcard').style.display='';$('dbg').style.display='';$('rcard').style.display='none';
   const t0=performance.now();
@@ -472,6 +516,22 @@ function run(){
     PHOTO_ROT=((Math.round(th/90)%4)+4)%4;
     if(PHOTO_ROT) DIAG['板子拍攝方向']=`${th.toFixed(0)}°（物品模式將轉回 ${PHOTO_ROT*90}°）`;
     pts.delete();o.delete();I.delete();
+  }
+  { // 相機距離估計（近垂直拍攝時有效）：已知板寬的像素跨距 + EXIF 等效焦距
+    //   D ≈ f_px × 實長 / 像素跨距；f_px = f35 / 43.27(35mm 對角) × 影像對角像素
+    //   之後厚度補償用 ×(D−h)/D 把「上表面平面」換算回板面尺度
+    if(CAM_F35>0){
+      const I=invMat(Hm), W=board.size[0], yc=board.size[1]/2;
+      const pts=cv.matFromArray(2,1,cv.CV_32FC2,[0,yc*P, W*P, yc*P]), o=new cv.Mat();
+      cv.perspectiveTransform(pts,o,I);
+      const span=Math.hypot(o.data32F[2]-o.data32F[0],o.data32F[3]-o.data32F[1]);
+      if(span>0){
+        const fpx=CAM_F35/43.266*Math.hypot(sm.cols,sm.rows);
+        CAM_D=fpx*W/span;
+        DIAG['相機距離']=`約 ${(CAM_D/10).toFixed(0)} cm（EXIF f≈${CAM_F35}mm eq）`;
+      }
+      pts.delete();o.delete();I.delete();
+    }else DIAG['相機距離']='無法估計（照片缺 EXIF 焦距）— 厚度補償不可用，可用實測校正';
   }
   const back=new cv.Mat(); cv.perspectiveTransform(dMat,back,invMat(Hm));
   const res=[];for(let i=0;i<S.length/2;i++)res.push(Math.hypot(back.data32F[i*2]-S[i*2],back.data32F[i*2+1]-S[i*2+1]));
@@ -1038,7 +1098,8 @@ function drawProfile(R){
 }
 
 /* ---------- garment type: geometry decides, the user can override ---------- */
-let TYPE_FORCED=null, PHOTO_ROT=0, BOARD_KIND='', SHOT_TAG='', ITEM_ANG=0;
+let TYPE_FORCED=null, PHOTO_ROT=0, BOARD_KIND='', SHOT_TAG='', ITEM_ANG=0,
+    ITEM_SCALE=1, CAM_D=0, CAM_F35=0;
 function syncTypeUI(){
   const t=ST.R.type;
   $('tTop').style.background = t==='top'?'var(--acc)':'#242a35';
@@ -1048,6 +1109,7 @@ function syncTypeUI(){
   $('tItem').style.background= t==='item'?'var(--acc)':'#242a35';
   $('tItem').style.color     = t==='item'?'#04101f':'var(--fg)';
   $('itemRot').style.display = (t==='item') ? '' : 'none';
+  $('itemFix').style.display = (t==='item') ? '' : 'none';
   $('tHint').textContent = TYPE_FORCED ? (TYPE_FORCED==='item'
       ?(ST.maskPre?'物品模式：偵測到綠色部位，外框已含綠色區域，請拖曳四角確認':'物品模式：量外框寬×高')
       :'已手動指定類型')
@@ -1105,6 +1167,29 @@ $('rL1').onclick=()=>itemRotate(1);
 $('rR1').onclick=()=>itemRotate(-1);
 $('rR5').onclick=()=>itemRotate(-5);
 $('rRst').onclick=()=>{ITEM_ANG=0; if(ST.R&&ST.R.type==='item')rebuildItem()};
+/* ---- 物品厚度補償／實測校正 ---- */
+function applyItemScale(k,msg){
+  ITEM_SCALE=k; DIAG['物品尺寸校正']=msg; $('fixHint').textContent=msg;
+  recalc(); paint();
+}
+$('thBtn').onclick=()=>{
+  const h=parseFloat($('thIn').value)*10;
+  if(!(h>0)){$('fixHint').textContent='請輸入厚度（cm）';return}
+  if(!(CAM_D>0)){$('fixHint').textContent='此照片無法估計相機距離（缺 EXIF 焦距），請改用下方實測校正';return}
+  if(h>=CAM_D*0.9){$('fixHint').textContent='厚度大於估計拍攝距離的九成，請確認單位是 cm';return}
+  const k=(CAM_D-h)/CAM_D;
+  applyItemScale(k,`厚度補償 ${(h/10).toFixed(1)} cm：係數 ×${k.toFixed(3)}（相機距離約 ${(CAM_D/10).toFixed(0)} cm）`);
+};
+function realFix(key){
+  const v=parseFloat($('realIn').value)*10;
+  if(!(v>0)){$('fixHint').textContent='請輸入實測值（cm）';return}
+  if(!FRAME)return;
+  const raw=key==='width'?Math.abs(FRAME.x2-FRAME.x1)/P:Math.abs(FRAME.y2-FRAME.y1)/P;
+  if(!(raw>0))return;
+  applyItemScale(v/raw,`實測校正（${key==='width'?'寬':'高'}＝${(v/10).toFixed(1)} cm）：係數 ×${(v/raw).toFixed(3)}，另一邊同步修正`);
+}
+$('realW').onclick=()=>realFix('width');
+$('realH').onclick=()=>realFix('height');
 
 /* ---------- interactive overlay ---------- */
 let HAND=[],VLIST=[],FRAME=null,drag=null,OVW=0,OVH=0,BASE=null,PAD=0,SCENE=null,LOUPE=null;
@@ -1205,8 +1290,8 @@ function initOverlay(){
 }
 function measured(key){
   if(FRAME){
-    if(key==='width')  return Math.abs(FRAME.x2-FRAME.x1)/P;
-    if(key==='height') return Math.abs(FRAME.y2-FRAME.y1)/P;
+    if(key==='width')  return Math.abs(FRAME.x2-FRAME.x1)/P*ITEM_SCALE;
+    if(key==='height') return Math.abs(FRAME.y2-FRAME.y1)/P*ITEM_SCALE;
   }
   const v=VLIST.find(x=>x.key===key);
   if(v) return Math.abs(v.y2-v.y1)/P;
